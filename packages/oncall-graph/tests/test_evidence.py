@@ -41,7 +41,7 @@ def _prom(query, *series):
     return ("promql", {"query": query}, {"query": query, "series": list(series)})
 
 
-def _exchanges(*, errors, server_calls, client_errors, p95=None, users=()):
+def _exchanges(*, errors, server_calls, client_errors, p95=None):
     found = [
         _prom(ERROR_BY_SERVICE, *(_series(v, service_name=k) for k, v in errors.items())),
         _prom(P95_BY_SERVICE, *(_series(v, service_name=k) for k, v in (p95 or {}).items())),
@@ -53,8 +53,14 @@ def _exchanges(*, errors, server_calls, client_errors, p95=None, users=()):
             {
                 "service": "checkout",
                 "trace_ids": ["t1"],
-                "users": list(users),
-                "error_trace_ids": ["t1"],
+                "errors": [
+                    {
+                        "service": "checkout",
+                        "operation": "oteldemo.PaymentService/Charge",
+                        "span_count": 1,
+                        "trace_ids": ["t1"],
+                    }
+                ],
             },
         ),
     ]
@@ -81,9 +87,7 @@ def test_payment_failure_blames_payment_and_refutes_unreachable():
     kinds = {(item["service"], item["kind"]) for item in candidates}
     assert kinds == {("checkout", "errors"), ("payment", "errors"), ("checkout", "unreachable")}
 
-    reports, hypotheses, _users, ruled_out = diagnose(
-        ["checkout", "payment"], candidates, exchanges, 4
-    )
+    reports, hypotheses, ruled_out = diagnose(["checkout", "payment"], candidates, exchanges, 4)
     verdicts = {item["service"]: item.get("local_cause") for item in reports}
     assert verdicts == {"checkout": False, "payment": True}
     assert [item["statement"] for item in hypotheses] == ["payment is returning errors"]
@@ -92,22 +96,19 @@ def test_payment_failure_blames_payment_and_refutes_unreachable():
 
 
 def test_payment_unreachable_blames_payment_from_the_checkout_copy():
-    exchanges = _exchanges(
-        errors={"checkout": 0.6}, server_calls=0, client_errors=1.1, users=("user-17",)
-    )
+    exchanges = _exchanges(errors={"checkout": 0.6}, server_calls=0, client_errors=1.1)
     candidates = ground_suspects("checkout", exchanges)
     assert {item["service"] for item in candidates} == {"checkout"}
 
-    reports, hypotheses, users, _ruled_out = diagnose(["checkout"], candidates, exchanges, 5)
+    reports, hypotheses, _ruled_out = diagnose(["checkout"], candidates, exchanges, 5)
     assert {"service": "payment", "local_cause": True, "tool_calls": 0} in reports
     assert next(item for item in reports if item["service"] == "checkout")["local_cause"] is False
     assert hypotheses[0]["service"] == "payment"
     assert hypotheses[0]["statement"] == UNREACHABLE
     assert hypotheses[0]["confidence"] <= MAX_CONFIDENCE
-    assert users == ["user-17"]
     for item in hypotheses:
         assert all(":" in ref or ref.isidentifier() for ref in item["evidence_refs"])
-        assert "user-17" not in " ".join(item["evidence_refs"])
+        assert "trace:checkout" in item["evidence_refs"]
 
 
 def test_a_healthy_shop_grounds_only_the_alert_service_and_finds_no_cause():
@@ -119,7 +120,7 @@ def test_a_healthy_shop_grounds_only_the_alert_service_and_finds_no_cause():
         ("checkout", "errors"),
         ("checkout", "unreachable"),
     ]
-    reports, hypotheses, _users, ruled_out = diagnose(["checkout"], candidates, exchanges, 4)
+    reports, hypotheses, ruled_out = diagnose(["checkout"], candidates, exchanges, 4)
     assert reports == [{"service": "checkout", "tool_calls": 4, "local_cause": False}]
     assert hypotheses == []
     assert len(ruled_out) == 2
@@ -129,7 +130,7 @@ def test_an_unread_query_is_no_verdict_not_a_denial():
     candidate = {"service": "payment", "statement": "payment is returning errors", "kind": "errors"}
     scored = score_candidate(candidate, [])
     assert scored["measured"] is False
-    reports, _hypotheses, _users, _ruled_out = diagnose(["payment"], [candidate], [], 0)
+    reports, _hypotheses, _ruled_out = diagnose(["payment"], [candidate], [], 0)
     assert reports == [{"service": "payment", "tool_calls": 0}]
     assert f"promql query={error_query('payment')}" in missing_reads(["payment"], [candidate], [])
 
@@ -276,7 +277,7 @@ def test_the_team_tells_the_two_payment_faults_apart(fault, statement):
     assert paused["proposed_action"]["args"] == {"flag": fault, "variant": "off"}
     assert shop.writes == []
     if fault == "paymentUnreachable":
-        assert "triage users user-17, user-42" in _texts(paused)
+        assert all(not line.startswith("triage users") for line in _texts(paused))
     else:
         assert all(item["statement"] != UNREACHABLE for item in paused["hypotheses"])
         assert any("ruled out" in line and UNREACHABLE in line for line in _texts(paused))

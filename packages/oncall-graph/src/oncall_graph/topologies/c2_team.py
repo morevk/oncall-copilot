@@ -41,7 +41,6 @@ from ..evidence import (
     LATENCY_MS,
     P95_BY_SERVICE,
     SERVER_CHARGE,
-    all_users,
     error_query,
     error_ratio_for,
     ground_suspects,
@@ -380,9 +379,6 @@ class Team:
             if rate is not None:
                 severity = assign_severity(rate, purchase_path=on_purchase_path(suspects))
         lines = [f"triage {severity} {', '.join(suspects) or 'none'}"]
-        users = all_users(exchanges)
-        if users:
-            lines.append("triage users " + ", ".join(users[:10]))
         return {
             "scope": {"services": suspects},
             "severity": severity,
@@ -511,11 +507,9 @@ class Team:
                 exchanges += exchanges_from_messages(again["messages"])
                 spent += int(again["tool_calls"])
                 rows += again["rows"]
-            reports, hypotheses, users, ruled_out = diagnose_from_evidence(
+            reports, hypotheses, ruled_out = diagnose_from_evidence(
                 services, candidates, exchanges, spent
             )
-            if users:
-                lines.append(f"{name} users " + ", ".join(users[:10]))
             if ruled_out:
                 lines.append(f"{name} ruled out " + "; ".join(ruled_out))
         else:

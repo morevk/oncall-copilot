@@ -215,21 +215,36 @@ class Shop:
         say(f"      scripted shop traces service={service!r} (no network)")
         self.reads.append(("traces", {"service": service}))
         if self.fault == "paymentUnreachable":
-            # The live shape: ids, users, and errored traces. No verdict field.
+            # The live shape: trace ids and grouped error spans. No user ids, no verdict.
             if service == "checkout" and self.faulted():
                 return {
                     "service": "checkout",
                     "count": 2,
                     "trace_ids": ["t-checkout-1", "t-checkout-2"],
-                    "users": ["user-17", "user-42"],
-                    "error_trace_ids": ["t-checkout-1"],
+                    "spans_read": 12,
+                    "error_spans": 2,
+                    "error_traces": 1,
+                    "error_groups": 1,
+                    "errors": [
+                        {
+                            "service": "checkout",
+                            "operation": "oteldemo.PaymentService/Charge",
+                            "span_count": 2,
+                            "trace_ids": ["t-checkout-1"],
+                        }
+                    ],
+                    "error_groups_omitted": 0,
                 }
             return {
                 "service": service,
                 "count": 0,
                 "trace_ids": [],
-                "users": [],
-                "error_trace_ids": [],
+                "spans_read": 0,
+                "error_spans": 0,
+                "error_traces": 0,
+                "error_groups": 0,
+                "errors": [],
+                "error_groups_omitted": 0,
             }
         if service == "payment" and self.armed():
             return {

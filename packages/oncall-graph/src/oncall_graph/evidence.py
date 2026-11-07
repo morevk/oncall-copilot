@@ -188,13 +188,18 @@ def _calls(exchanges, tool: str, service: str) -> list[dict]:
     ]
 
 
-def users_and_traces(exchanges, service: str) -> tuple[list[str], list[str]]:
-    users: list[str] = []
+def error_traces_for(exchanges, service: str) -> list[str]:
+    """Trace ids of spans that errored in ``service``'s traces, from the grouped ``errors``.
+
+    The live client returns no user ids: span attributes do not cross into the
+    result, by design. So the only per-trace evidence is these citations.
+    """
     traces: list[str] = []
     for result in _calls(exchanges, "traces", service):
-        users.extend(str(item) for item in result.get("users") or [])
-        traces.extend(str(item) for item in result.get("error_trace_ids") or [])
-    return list(dict.fromkeys(users)), list(dict.fromkeys(traces))
+        for group in result.get("errors") or []:
+            if isinstance(group, dict):
+                traces.extend(str(item) for item in group.get("trace_ids") or [])
+    return list(dict.fromkeys(traces))
 
 
 def error_log_lines(exchanges, service: str) -> list[str]:
@@ -205,14 +210,6 @@ def error_log_lines(exchanges, service: str) -> list[str]:
             if "error" in text or "warn" in text or "fail" in text or "refused" in text:
                 lines.append(str(line))
     return lines
-
-
-def all_users(exchanges) -> list[str]:
-    users: list[str] = []
-    for name, _args, result in exchanges or []:
-        if name == "traces" and isinstance(result, dict):
-            users.extend(str(item) for item in result.get("users") or [])
-    return list(dict.fromkeys(users))
 
 
 def _candidate(service: str, statement: str, kind: str, note: str) -> dict:
@@ -305,7 +302,7 @@ def score_candidate(
     error_threshold: float = ERROR_THRESHOLD,
     latency_ms: float = LATENCY_MS,
 ) -> dict:
-    """Confidence, evidence refs, and the users seen, for one candidate.
+    """Confidence and evidence refs for one candidate.
 
     ``measured`` is False when the deciding read never ran, so the caller can
     report no verdict rather than a denial. Refs name the read, not its payload.
@@ -347,10 +344,8 @@ def score_candidate(
             refs.append(f"promql:error_ratio:{service}")
             notes.append(f"error_ratio={ratio:.3f}")
             confidence += 0.5 if ratio >= error_threshold else -0.2
-    users, traces = users_and_traces(exchanges, service)
+    traces = error_traces_for(exchanges, service)
     logs = error_log_lines(exchanges, service)
-    if users:
-        confidence += 0.1
     if traces:
         refs.append(f"trace:{service}")
         notes.append(f"error_traces={len(traces)}")
@@ -362,7 +357,6 @@ def score_candidate(
     return {
         "confidence": _clamp(confidence),
         "refs": refs or [service],
-        "users": users,
         "notes": notes,
         "measured": measured,
     }
@@ -425,8 +419,8 @@ def missing_reads(services, candidates, exchanges) -> list[str]:
 
 def diagnose(
     services, candidates, exchanges, tool_calls: int
-) -> tuple[list[dict], list[dict], list[str], list[str]]:
-    """Reports, supported hypotheses ranked by confidence, users seen, and claims ruled out.
+) -> tuple[list[dict], list[dict], list[str]]:
+    """Reports, supported hypotheses ranked by confidence, and claims ruled out.
 
     Only a hypothesis at or above ``LOCAL_CAUSE_LINE`` goes on the shared
     list: every later brief renders that list, and a refuted claim there reads
@@ -437,12 +431,11 @@ def diagnose(
     """
     services = [service for service in services or [] if service]
     if not services:
-        return [], [], [], []
+        return [], [], []
     shares = split_budget(tool_calls, len(services))
     downstream = checkout_errors_are_downstream(exchanges)
     reports: list[dict] = []
     hypotheses: list[dict] = []
-    users: list[str] = []
     unreachable_confirmed = False
     for index, service in enumerate(services):
         report: dict = {"service": service, "tool_calls": int(shares[index])}
@@ -451,7 +444,6 @@ def diagnose(
             if candidate.get("service") != service:
                 continue
             scored = score_candidate(candidate, exchanges)
-            users.extend(item for item in scored["users"] if item not in users)
             confidence = scored["confidence"]
             if candidate.get("kind") == "unreachable":
                 if scored["measured"] and confidence >= LOCAL_CAUSE_LINE:
@@ -493,4 +485,4 @@ def diagnose(
         for item in hypotheses
         if item["confidence"] < LOCAL_CAUSE_LINE
     ]
-    return reports, supported, users, ruled_out
+    return reports, supported, ruled_out
