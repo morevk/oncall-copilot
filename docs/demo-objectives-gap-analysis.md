@@ -97,6 +97,15 @@ The real telemetry reads feed the model's narrative. They do not feed the gate.
   "applied, not yet verified" — which is a better demo than a `RECOVERED` that means nothing, but
   it is a user-visible design change and it is P2's call.
 
+> **The definition of done for the first two of those is now executable.**
+> `tests/test_apply_reaches_the_real_shop.py` skips with an actionable reason until the seam
+> exists, then pins both halves: the approved fix changes the document flagd reads, and
+> `armed()`/`metrics()` read that document rather than the write. Writing through while the gate
+> still reads the in-memory mirror leaves the fiction standing, and the file fails on exactly
+> that mutation. It also pins the refusals the seam buys for free — the invented
+> `checkout_error_rate`, a re-arm routed through `set_flag`, and `restart`. P1 wrote the
+> criterion; the change is P2's.
+
 ### 1b. The traces tool cannot show payment errors — P1, mine
 
 ```python

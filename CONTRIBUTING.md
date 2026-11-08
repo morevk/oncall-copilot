@@ -476,6 +476,49 @@ Scene 3's mechanism is proved end to end in `tests/test_demo_scene_3.py`, which 
 root test tree because it imports both packages and `test_dependency_direction` scans package
 tests too.
 
+## The live write is still the fixture, and the recovery gate closes over it
+
+**The acceptance criterion is `tests/test_apply_reaches_the_real_shop.py`, which skips until the
+change lands.** It is P2's change to make: this is a spec, not a patch.
+
+`main.py:272` builds `Solo(shop=LiveShop())`, and `LiveShop` overrides three of `Shop`'s ten
+public methods — `promql`, `log_search`, `traces`. `apply` is inherited from the scripted
+fixture, so the live investigation path writes to a dict. Measured against a temporary copy of
+the flagd document with `paymentFailure` armed:
+
+```
+apply("set_flag", {"flag": "paymentFailure", "variant": "off"})
+  -> {"ok": True, "previous": "100%", "changed": True}
+faulted() -> False      metrics() -> {"error_rate": 0.01}
+the document on disk -> "100%"
+```
+
+Every line of that is a success and the shop is still broken. `metrics()` is `0.08 if
+self.faulted() else 0.01` (`stubs.py:141`), `faulted()` reads `self.flags` (`stubs.py:133`), and
+`self.flags` is what `apply` just wrote (`stubs.py:328`) — so `verify_metrics`
+(`nodes/remediate.py:183`) grades the agent's own write and reports `RECOVERED`.
+
+**The other half is already built.** `mcp-ops-actions` writes the document flagd reads and
+refuses any `(flag, variant)` pair no runbook names, with the offer in the message. So routing
+`apply` at this seam does four things at once: it makes the fifth demo beat real, it refuses the
+`checkout_error_rate` proposal both live runs made (`docs/objective-1-live-run.md`), it makes
+`restart` impossible because no server implements one, and it puts the three idle MCP containers
+into an investigation for the first time.
+
+**Both halves are required, and the second is the one that matters.** Writing through to the
+document while `armed()` still reads the in-memory mirror fixes the invented flag and leaves the
+fiction standing: a write that is refused at the file layer, or lands in the wrong file —
+`DEFAULT_FLAG_PATH` is relative and the stdio servers' `cwd` is still unpinned — reads back as
+recovery off the mirror. Proved by mutation: with `apply` writing through and `armed()` left on
+the mirror, exactly one test fails, and it is
+`test_the_verification_gate_reads_the_document_and_not_the_write`.
+
+**One conflict to settle first.**
+`packages/oncall-graph/tests/test_astronomy_shop.py::test_live_shop_reads_telemetry_and_keeps_stub_writes`
+asserts `shop.flags["paymentFailure"] == "off"` after `apply`, and its name says the intent.
+That test is right about today and has to be retired or rewritten by its owner as part of this
+change. Flagged here rather than discovered in CI.
+
 ## The P2 / P3 seam
 
 `interrupt()` is a LangGraph primitive, so the **call site** is in `oncall_graph/nodes/remediate.py`
