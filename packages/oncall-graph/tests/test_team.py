@@ -154,12 +154,13 @@ class TeamModel:
             if "Verification: recovered=False" in text:
                 return _ai("no further action", prompt=prompt)
             if not has_tool:
-                if self.action == "restart":
+                if self.action == "ineffective":
                     call = _call(
-                        "restart",
+                        "set_flag",
                         {
-                            "service": "payment",
-                            "expected_effect": "payment process restarts",
+                            "flag": "paymentFailure",
+                            "variant": "50%",
+                            "expected_effect": "checkout error rate falls below 5%",
                         },
                         "act",
                     )
@@ -384,7 +385,7 @@ def test_diagnosis_tools_are_read_only():
     names = [tool.name for tool in telemetry_tools(Shop())]
     assert names == list(TELEMETRY_TOOLS)
     assert "recent_changes" in names
-    for action in ("set_flag", "restart", "scale", "rollback"):
+    for action in ("set_flag", "restart", "scale", "rollback", "rollback_flag"):
         assert action not in names
     assert "recent_changes" not in READ_TOOLS
 
@@ -411,7 +412,6 @@ def test_checkout_alert_replans_then_proposes_the_flag():
     assert paused["proposed_action"]["action"] == "set_flag"
     assert paused["proposed_action"]["args"] == {"flag": "paymentFailure", "variant": "off"}
     assert shop.writes == []
-    assert shop.restarts == []
     assert shop.flags["paymentFailure"] == "100%"
     intr = interrupt_value(paused)
     assert intr["command"]["action"] == "set_flag"
@@ -486,21 +486,21 @@ def test_reject_writes_nothing():
     assert shop.flags["paymentFailure"] == "100%"
 
 
-def test_failed_restart_rolls_back_and_does_not_approve_a_second_action():
+def test_a_flag_that_does_not_clear_the_fault_rolls_back():
     shop = Shop()
-    team = Team(model=TeamModel(action="restart"), shop=shop, tool_budget=10)
+    team = Team(model=TeamModel(action="ineffective"), shop=shop, tool_budget=10)
     team.run(PAYMENT_ALERT)
     done, _measured = team.run(resume={"decision": "approve"})
     assert shop.writes == [
-        {"tool": "restart", "args": {"service": "payment"}},
-        {"tool": "rollback", "args": {"service": "payment"}},
+        {"tool": "set_flag", "args": {"flag": "paymentFailure", "variant": "50%"}},
+        {"tool": "rollback_flag", "args": {"flag": "paymentFailure", "variant": "100%"}},
     ]
     assert shop.flags["paymentFailure"] == "100%"
     assert done["status"] == "ESCALATED"
     assert interrupt_value(done) is None
     assert "verify recovered=False" in texts(done)
     assert "rollback" in texts(done)
-    assert done["pending_rollback"]["tool"] == "rollback"
+    assert done["pending_rollback"]["tool"] == "rollback_flag"
 
 
 def test_an_edit_does_not_reuse_the_old_approval():
@@ -512,9 +512,9 @@ def test_an_edit_does_not_reuse_the_old_approval():
         resume={
             "decision": "edit",
             "command": {
-                "action": "restart",
-                "args": {"service": "payment"},
-                "expected_effect": "payment process restarts",
+                "action": "set_flag",
+                "args": {"flag": "paymentFailure", "variant": "50%"},
+                "expected_effect": "checkout error rate falls below 5%",
             },
         }
     )
@@ -522,10 +522,13 @@ def test_an_edit_does_not_reuse_the_old_approval():
     assert shop.writes == []
     done, _measured = team.run(resume={"decision": "approve", "payload_hash": old})
     assert shop.writes == []
-    assert interrupt_value(done)["command"]["action"] == "restart"
+    assert interrupt_value(done)["command"]["args"]["variant"] == "50%"
     finished, _measured = team.run(resume={"decision": "approve"})
-    assert shop.writes[0] == {"tool": "restart", "args": {"service": "payment"}}
-    assert all(item["tool"] != "set_flag" for item in shop.writes)
+    assert shop.writes[0] == {
+        "tool": "set_flag",
+        "args": {"flag": "paymentFailure", "variant": "50%"},
+    }
+    assert shop.writes[1]["tool"] == "rollback_flag"
     assert shop.flags["paymentFailure"] == "100%"
     assert finished["status"] == "ESCALATED"
 

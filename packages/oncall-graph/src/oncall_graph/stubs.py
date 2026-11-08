@@ -119,9 +119,6 @@ class Shop:
             self.flags = {"paymentFailure": self.ARMED}
         self.reads = []
         self.writes = []
-        self.restarts = []
-        self.rollbacks = []
-        self.replicas = {}
 
     def armed(self, flag: str = "paymentFailure") -> bool:
         """Whether a flag is set to a fault variant.
@@ -326,28 +323,20 @@ class Shop:
             raise ValueError(f"unknown tool: {tool!r}")
         clean = dict(args or {})
         self.writes.append({"tool": tool, "args": clean})
-        if tool in ("set_flag", "rollback_flag"):
-            previous = self.flags.get(clean["flag"], self.DISARMED)
-            self.flags[clean["flag"]] = clean["variant"]
-            # `previous` is the contract `mcp-ops-actions` already returns, and
-            # `monitor.code_rollback` builds the inverse out of it. A shop that
-            # did not report it would leave the rollback path guessing.
-            return {
-                "ok": True,
-                "tool": tool,
-                "args": clean,
-                "flag": clean["flag"],
-                "variant": clean["variant"],
-                "previous": previous,
-                "changed": previous != clean["variant"],
-            }
-        elif tool == "restart":
-            self.restarts.append(clean["service"])
-        elif tool == "scale":
-            self.replicas[clean["service"]] = clean["replicas"]
-        elif tool == "rollback":
-            self.rollbacks.append(clean["service"])
-        return {"ok": True, "tool": tool, "args": clean}
+        previous = self.flags.get(clean["flag"], self.DISARMED)
+        self.flags[clean["flag"]] = clean["variant"]
+        # `previous` is the contract `mcp-ops-actions` already returns, and
+        # `monitor.code_rollback` builds the inverse out of it. A shop that
+        # did not report it would leave the rollback path guessing.
+        return {
+            "ok": True,
+            "tool": tool,
+            "args": clean,
+            "flag": clean["flag"],
+            "variant": clean["variant"],
+            "previous": previous,
+            "changed": previous != clean["variant"],
+        }
 
 
 def _record(tool, args, expected_effect):
@@ -499,19 +488,7 @@ def proposal_tools() -> list:
         """Propose set_flag. Does not change the shop."""
         return _record("set_flag", {"flag": flag, "variant": variant}, expected_effect)
 
-    def restart(service: str, expected_effect: str) -> dict:
-        """Propose restart. Does not change the shop."""
-        return _record("restart", {"service": service}, expected_effect)
-
-    def scale(service: str, replicas: int, expected_effect: str) -> dict:
-        """Propose scale. Does not change the shop."""
-        return _record("scale", {"service": service, "replicas": replicas}, expected_effect)
-
-    def rollback(service: str, expected_effect: str) -> dict:
-        """Propose rollback. Does not change the shop."""
-        return _record("rollback", {"service": service}, expected_effect)
-
-    functions = (set_flag, restart, scale, rollback)
+    functions = (set_flag,)
     tools = [Tool(fn.__name__, fn) for fn in functions]
     if [tool.name for tool in tools] != list(ACTION_TOOLS):
         raise RuntimeError("action tools drifted from ACTION_TOOLS")

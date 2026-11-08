@@ -128,7 +128,7 @@ def test_meter_splits_calls_tokens_prompt_and_seconds_by_agent():
         record(
             "solo",
             _reply("a", 900, 30, tools=["promql", "traces"]),
-            7,
+            6,
             model_id=COMMANDER_MODEL,
             tools_available=[
                 "promql",
@@ -137,7 +137,6 @@ def test_meter_splits_calls_tokens_prompt_and_seconds_by_agent():
                 "recent_changes",
                 "search_runbooks",
                 "set_flag",
-                "restart",
             ],
             seconds=1.2,
         )
@@ -166,7 +165,7 @@ def test_meter_splits_calls_tokens_prompt_and_seconds_by_agent():
     solo = measured.by_agent["solo"]
     assert solo["calls"] == 1
     assert solo["tools_invoked"] == 2
-    assert solo["tools_available"] == 7
+    assert solo["tools_available"] == 6
     assert solo["largest_prompt"] == 900
     assert solo["tokens"] == 930
     assert solo["seconds"] == 1.2

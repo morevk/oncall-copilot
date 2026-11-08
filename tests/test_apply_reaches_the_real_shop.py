@@ -216,9 +216,8 @@ def test_restart_cannot_be_applied_because_no_server_implements_it(shop) -> None
     objective is about.
 
     The requirement is that it does not report success, so the refusal is
-    checked by outcome and the type is left open -- which tool layer says no is
-    P2's call, and today the fixture appends the service to `self.restarts` and
-    returns `{"ok": True}`.
+    checked by outcome and the type is left open. `Shop.apply` raises
+    `unknown tool` for `restart`, because it is not in `WRITE_TOOLS`.
     """
     try:
         result = shop.apply("restart", {"service": "payment"})

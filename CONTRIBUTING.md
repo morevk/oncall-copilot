@@ -236,9 +236,10 @@ a model may not propose a re-arm, so `validate_action` rejects it as an unknown 
 `code_rollback` names it. `WRITE_TOOLS` is what `Shop.apply` accepts. This mirrors the server-side
 split — see "`mcp-ops-actions`: the only write server".
 
-Still unreconciled, and P2's call: `ACTION_TOOLS` names `restart`, `scale` and `rollback`, which
-have no schema in `ACTION_SCHEMAS`, no server and no corpus action. The guard above skips an
-action the contract does not declare, so it does not catch these.
+`restart`, `scale` and a service `rollback` are not in `ACTION_TOOLS`. No runbook names them
+and no server implements them, so `validate_action` rejects each as an unknown action. See
+[ADR-0007](docs/decisions/0007-no-service-actions.md). The guard above compares the actions the
+planner does declare, which is `set_flag`.
 
 **Also unresolved, and P2's call:** the stub `search_runbooks(symptom) -> {"passages": [...]}` in
 `oncall_graph/stubs.py` is not the real contract (`search_runbooks(query, k) -> [hits]`, `fix` as

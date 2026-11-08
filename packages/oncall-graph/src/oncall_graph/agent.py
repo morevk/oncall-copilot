@@ -52,6 +52,20 @@ def _as_langchain_tool(tool):
     return StructuredTool.from_function(fn, name=tool.name, description=description)
 
 
+def refused_tool_lines(messages) -> list[str]:
+    """Tool results that named a tool this agent does not have.
+
+    The approval gate never sees these calls. The line is what the transcript
+    shows, so a copied "restart everything" is a refusal with a reason.
+    """
+    found = []
+    for message in messages or []:
+        content = getattr(message, "content", "")
+        if isinstance(content, str) and "has no tool called" in content:
+            found.append(content)
+    return found
+
+
 def _bind_tools(chat, tools):
     if not tools:
         return chat

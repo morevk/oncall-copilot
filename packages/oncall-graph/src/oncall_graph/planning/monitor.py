@@ -135,9 +135,6 @@ def code_rollback(state) -> dict:
         if previous and isinstance(flag, str) and flag.strip():
             return {"tool": "rollback_flag", "args": {"flag": flag, "variant": previous}}
         return {}
-    if name in ("restart", "scale", "rollback"):
-        service = str(args.get("service") or "")
-        return {"tool": "rollback", "args": {"service": service}}
     return {}
 
 

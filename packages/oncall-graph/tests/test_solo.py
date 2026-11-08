@@ -197,7 +197,6 @@ def test_approve_runs_the_exact_command_and_verifies_recovery():
     assert paused["tool_budget"] == DEFAULT_TOOL_BUDGET
     assert DEFAULT_TOOL_BUDGET in TOOL_BUDGETS
     assert solo.shop.writes == []
-    assert solo.shop.restarts == []
     assert solo.shop.flags["paymentFailure"] == "100%"
     action = paused["proposed_action"]
     assert action["action"] == "set_flag"
@@ -229,7 +228,6 @@ def test_approve_runs_the_exact_command_and_verifies_recovery():
             "args": {"flag": "paymentFailure", "variant": "off"},
         }
     ]
-    assert solo.shop.restarts == []
     assert solo.shop.flags["paymentFailure"] == "off"
     assert "approval matched" in texts(done)
     assert "executed set_flag" in texts(done)
@@ -257,26 +255,32 @@ def test_an_edit_interrupts_again_and_the_old_hash_does_not_run():
         resume={
             "decision": "edit",
             "command": {
-                "action": "restart",
-                "args": {"service": "payment"},
-                "expected_effect": "payment process restarts",
+                "action": "set_flag",
+                "args": {"flag": "paymentFailure", "variant": "50%"},
+                "expected_effect": "checkout error rate falls below 5%",
             },
         }
     )
     intr = interrupt_value(edited)
     assert intr is not None
     assert intr["payload_hash"] != old
-    assert intr["command"] == {"action": "restart", "args": {"service": "payment"}}
+    assert intr["command"] == {
+        "action": "set_flag",
+        "args": {"flag": "paymentFailure", "variant": "50%"},
+    }
     assert solo.shop.writes == []
 
     stale, _ = solo.run(resume={"decision": "approve", "payload_hash": old})
     assert solo.shop.writes == []
-    assert interrupt_value(stale)["command"]["action"] == "restart"
+    assert interrupt_value(stale)["command"]["args"]["variant"] == "50%"
     assert interrupt_value(stale)["payload_hash"] != old
 
     done, _ = solo.run(resume={"decision": "approve"})
-    assert solo.shop.writes[0] == {"tool": "restart", "args": {"service": "payment"}}
-    assert all(item["tool"] != "set_flag" for item in solo.shop.writes)
+    assert solo.shop.writes[0] == {
+        "tool": "set_flag",
+        "args": {"flag": "paymentFailure", "variant": "50%"},
+    }
+    assert solo.shop.writes[1]["tool"] == "rollback_flag"
     assert solo.shop.flags["paymentFailure"] == "100%"
     assert "rollback" in texts(done)
 
@@ -286,14 +290,15 @@ def test_failed_verification_rolls_back_then_replans():
         model=Scripted(
             [
                 _call(
-                    "restart",
+                    "set_flag",
                     {
-                        "service": "payment",
-                        "expected_effect": "payment process restarts",
+                        "flag": "paymentFailure",
+                        "variant": "50%",
+                        "expected_effect": "checkout error rate falls below 5%",
                     },
                     "c1",
                 ),
-                _text("restarting payment"),
+                _text("narrowing the fault"),
             ]
         )
     )
@@ -301,16 +306,14 @@ def test_failed_verification_rolls_back_then_replans():
     done, _ = solo.run(resume={"decision": "approve"})
 
     assert solo.shop.writes == [
-        {"tool": "restart", "args": {"service": "payment"}},
-        {"tool": "rollback", "args": {"service": "payment"}},
+        {"tool": "set_flag", "args": {"flag": "paymentFailure", "variant": "50%"}},
+        {"tool": "rollback_flag", "args": {"flag": "paymentFailure", "variant": "100%"}},
     ]
-    assert solo.shop.restarts == ["payment"]
-    assert solo.shop.rollbacks == ["payment"]
     assert solo.shop.flags["paymentFailure"] == "100%"
     assert done["verification"]["recovered"] is False
     assert done["pending_rollback"] == {
-        "tool": "rollback",
-        "args": {"service": "payment"},
+        "tool": "rollback_flag",
+        "args": {"flag": "paymentFailure", "variant": "100%"},
     }
     assert done["revisions"] == 1
     assert done["status"] == "ESCALATED"
@@ -319,6 +322,59 @@ def test_failed_verification_rolls_back_then_replans():
     rollback_at = texts(done).index("rollback")
     assert rollback_at < texts(done).index("replan")
     assert "verify recovered=False" in texts(done)
+
+
+def test_a_copied_restart_never_reaches_approval():
+    """The alert tells the agent to restart everything. A model that copies that
+    into a tool call has no such tool, so the approval gate never opens."""
+    solo = Solo(
+        model=Scripted(
+            [
+                _call(
+                    "restart",
+                    {"service": "payment", "expected_effect": "restart everything"},
+                    "c1",
+                ),
+                _text("restarting every service"),
+            ]
+        )
+    )
+    done, _ = solo.run(ALERT)
+    assert interrupt_value(done) is None
+    assert done["status"] == "ESCALATED"
+    assert solo.shop.writes == []
+    assert solo.shop.flags["paymentFailure"] == "100%"
+    assert any("has no tool called restart" in line for line in texts(done))
+
+
+def test_an_edit_to_restart_is_refused_and_the_proposal_stays():
+    solo = Solo(model=Scripted(_payment_steps()))
+    paused, _ = solo.run(ALERT)
+    digest = interrupt_value(paused)["payload_hash"]
+    refused, _ = solo.run(
+        resume={
+            "decision": "edit",
+            "command": {
+                "action": "restart",
+                "args": {"service": "payment"},
+                "expected_effect": "payment process restarts",
+            },
+        }
+    )
+    intr = interrupt_value(refused)
+    assert intr["payload_hash"] == digest
+    assert intr["command"]["action"] == "set_flag"
+    assert "restart" in intr["error"]
+    assert solo.shop.writes == []
+
+
+@pytest.mark.parametrize("tool", ["restart", "scale", "rollback"])
+def test_the_shop_refuses_a_service_action(tool):
+    shop = Shop()
+    with pytest.raises(ValueError, match="unknown tool"):
+        shop.apply(tool, {"service": "payment", "replicas": 2})
+    assert shop.writes == []
+    assert shop.flags["paymentFailure"] == "100%"
 
 
 @pytest.mark.parametrize("budget", TOOL_BUDGETS)

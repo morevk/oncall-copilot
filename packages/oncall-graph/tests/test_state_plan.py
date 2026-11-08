@@ -79,7 +79,7 @@ def test_validate_plan_rejects_unknown_shell_and_a_second_action():
     with pytest.raises(ValueError, match="unknown tool"):
         validate_plan({"stage": "test", "steps": [{"tool": "bash", "args": {}}]})
 
-    with pytest.raises(ValueError, match="shell-shaped command"):
+    with pytest.raises(ValueError, match="unknown action"):
         validate_action(
             {
                 "action": "restart",
@@ -143,23 +143,26 @@ def test_a_write_tool_hiding_in_steps_is_rejected():
                 "steps": [
                     {"tool": "promql", "args": {"query": "error_rate"}},
                     {
-                        "tool": "restart",
-                        "args": {"service": "payment"},
-                        "expected_effect": "payment error rate drops",
+                        "tool": "set_flag",
+                        "args": {"flag": "paymentFailure", "variant": "off"},
                     },
                 ],
             }
         )
-    action = validate_action(
-        {
-            "action": "restart",
-            "args": {"service": "payment"},
-            "expected_effect": "payment error rate drops",
-            "rollback": "rollback payment",
-        }
-    )
-    assert action["action"] == "restart"
-    assert action["rollback"] == "rollback payment"
+
+
+@pytest.mark.parametrize("action", ["restart", "scale", "rollback"])
+def test_a_service_action_is_unknown(action):
+    """No runbook names these, and no server implements them. The refusal names the action."""
+    with pytest.raises(ValueError, match=f"unknown action: '{action}'"):
+        validate_action(
+            {
+                "action": action,
+                "args": {"service": "payment"},
+                "expected_effect": "payment error rate drops",
+                "rollback": "rollback payment",
+            }
+        )
 
 
 def test_timeout_retries_once_then_replans():

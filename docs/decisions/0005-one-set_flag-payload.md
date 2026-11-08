@@ -1,6 +1,6 @@
 # ADR-0005: one `set_flag` payload, and an undo that is read rather than computed
 
-**Status:** Accepted
+**Status:** Accepted. The open `restart` / `scale` / `rollback` item in Consequences is settled by [ADR-0007](0007-no-service-actions.md).
 **Date:** 2026-11-06
 **Deciders:** P1 (domain, knowledge & memory). **This changes P2's graded component — `planning/plan.py`, `planning/monitor.py`, `stubs.py`, `handoffs.py` — and P5's `oncall-service` demo payloads. P2 and P5 should read it.**
 **Builds on:** [ADR-0004](0004-the-only-write-server.md), whose "Recorded, NOT fixed" section this resolves.
