@@ -86,3 +86,32 @@ def test_notification_starts_one_agent_and_a_repeat_does_not(monkeypatch):
     assert second.status_code == 202
     assert second.json()["incidents"][0]["incident_id"] == incident_id
     assert calls == [incident_id]
+
+
+def test_notification_can_select_the_team_and_a_repeat_does_not(monkeypatch):
+    calls: list[str] = []
+
+    async def fake_run(store, incident, resume=None):
+        calls.append(incident.incident_id)
+        incident.status = "INVESTIGATING"
+        await store.emit(incident, "agent.started", "patched agent")
+
+    monkeypatch.setattr("oncall_service.main._run_real", fake_run)
+    with TestClient(create_app(demo_delay=0)) as client:
+        first = client.post("/alerts?config_id=c2_team", json=FIRING)
+        assert first.status_code == 202
+        started = first.json()["incidents"]
+        assert len(started) == 1
+        assert started[0]["config_id"] == "c2_team"
+        assert started[0]["tool_budget"] == 40
+        incident_id = started[0]["incident_id"]
+
+        deadline = time.monotonic() + 2
+        while incident_id not in calls and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        second = client.post("/alerts?config_id=c2_team", json=FIRING)
+
+    assert second.status_code == 202
+    assert second.json()["incidents"][0]["incident_id"] == incident_id
+    assert calls == [incident_id]

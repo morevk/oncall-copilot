@@ -5,9 +5,11 @@ read-only agent per suspect, started together with ``Send``. Each copy sees
 only its brief. Their reports append. The monitor then reads the merged list.
 
 The incident budget is the same number the solo agent gets. Parallel copies
-split it (``budget // n``, remainder on the first) so the team does not receive
-that budget once per suspect. ``parallel_diagnosis=False`` is the one
-investigator: one diagnosis agent, the whole list, the whole budget.
+split what triage has not spent (``budget // n``, remainder on the first) so
+the team does not receive that budget once per suspect. Three calls stay
+reserved for the runbook and the one proposal. ``parallel_diagnosis=False``
+is the one investigator: one diagnosis agent, the whole list, and that same
+unsplit remainder.
 
 Runbook, remediation, and comms are the same kind of agent with different
 tools. Remediation proposes one action. It does not change the shop. The
@@ -25,9 +27,11 @@ from langgraph.types import Command, Send
 
 from ..agent import Agent
 from ..briefs import (
+    REMEDIATION_RESERVE,
     alert_service,
     alert_summary,
     assign_severity,
+    investigation_budget,
     on_purchase_path,
     remaining_budget,
     render_brief,
@@ -315,8 +319,8 @@ class Team:
 
     def triage(self, state):
         """Read telemetry and return suspects. Severity is assigned in code."""
-        remaining = remaining_budget(state)
-        if remaining <= 0:
+        allowance = investigation_budget(state, default_budget=self.tool_budget)
+        if allowance <= 0:
             handoff = triage_from_exchanges(state.get("alert"), [], 0)
             return {
                 "scope": {"services": handoff["services"]},
@@ -331,8 +335,8 @@ class Team:
             telemetry_tools(self.shop),
             TRIAGE_PROMPT,
             self._specialist(),
-            remaining,
-            _triage_brief(state, remaining),
+            allowance,
+            _triage_brief(state, allowance),
         )
         exchanges = exchanges_from_messages(result["messages"])
         spent = int(result["tool_calls"])
@@ -343,19 +347,19 @@ class Team:
         # The scripted shop's answers carry no series, and its queries succeed,
         # so this fires only when the overview was never run or Prometheus
         # rejected it. That is the live case of a mangled query.
-        if owed and spent < remaining and (failed or not promql):
+        if owed and spent < allowance and (failed or not promql):
             again = _run(
                 "triage",
                 telemetry_tools(self.shop),
                 TRIAGE_PROMPT,
                 self._specialist(),
-                remaining - spent,
+                allowance - spent,
                 render_brief(
                     {
                         "agent": "triage",
                         "alert_summary": alert_summary(state.get("alert")),
                         "plan": _plan_text(state),
-                        "tool_budget": remaining - spent,
+                        "tool_budget": allowance - spent,
                         "guidance": (
                             "These queries were not answered. Call promql with each, "
                             "copied exactly:\n" + "\n".join(owed)
@@ -402,8 +406,7 @@ class Team:
         services = list((state.get("scope") or {}).get("services") or [])
         if not services:
             return "monitor"
-        budget = state.get("tool_budget")
-        budget = self.tool_budget if budget is None else int(budget)
+        budget = investigation_budget(state, default_budget=self.tool_budget)
         summary = alert_summary(state.get("alert"))
         severity = state.get("severity") or ""
         plan = state.get("plan")
@@ -577,18 +580,19 @@ class Team:
         """Retrieve passages, then drop lessons whose preconditions do not match."""
         service = focus_service(state)
         symptom = symptom_of(state)
-        remaining = remaining_budget(state)
+        # Leave the remediation call even when the runbook wants another search.
+        allowance = max(remaining_budget(state) - REMEDIATION_RESERVE, 0)
         passages: list[dict] = []
         rows: list[dict] = []
         spent = 0
-        if remaining > 0:
+        if allowance > 0:
             result = _run(
                 "runbook",
                 runbook_tools(self.shop),
                 RUNBOOK_PROMPT,
                 self._specialist(),
-                remaining,
-                _worker_brief(state, "runbook", remaining),
+                allowance,
+                _worker_brief(state, "runbook", allowance),
             )
             passages = passages_from_exchanges(exchanges_from_messages(result["messages"]))
             rows = result["rows"]

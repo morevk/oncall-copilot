@@ -19,8 +19,10 @@ from fastapi.staticfiles import StaticFiles
 from oncall_contracts.config import Topology
 from oncall_contracts.state import Alert
 from oncall_graph.astronomy_shop import LiveShop
+from oncall_graph.config import DEFAULT_TOOL_BUDGET, LIVE_TOOL_BUDGET
 from oncall_graph.nodes.remediate import command_payload, payload_hash
 from oncall_graph.topologies.c1_single import Solo, interrupt_value
+from oncall_graph.topologies.c2_team import Team
 from pydantic import BaseModel
 
 from .alerts import AlertPayloadError, firing_alerts, is_notification_group
@@ -28,6 +30,7 @@ from .database import IncidentDatabase
 
 STATIC = Path(__file__).with_name("static")
 TERMINAL = frozenset({"RECOVERED", "REJECTED", "ESCALATED", "APPROVAL_MISMATCH"})
+RUNNABLE: frozenset[Topology] = frozenset({"c1_single", "c2_team"})
 
 
 def _now() -> str:
@@ -60,7 +63,7 @@ class Incident:
     error: str | None = None
     events: list[dict[str, Any]] = field(default_factory=list)
     condition: asyncio.Condition = field(default_factory=asyncio.Condition)
-    solo: Solo | None = None
+    runner: Solo | Team | None = None
     running: bool = False
 
     def snapshot(self) -> dict[str, Any]:
@@ -244,7 +247,7 @@ def _system_run(incident: Incident, raw: dict[str, Any]) -> dict[str, Any]:
     proposed_action = None
     if isinstance(proposal, dict) and proposal.get("action"):
         proposed_action = {"action": proposal["action"], "args": dict(proposal.get("args") or {})}
-    writes = incident.solo.shop.writes if incident.solo is not None else []
+    writes = incident.runner.shop.writes if incident.runner is not None else []
     executed = [
         {"action": item.get("tool"), "args": dict(item.get("args") or {})}
         for item in writes
@@ -306,17 +309,17 @@ async def _run_real(store: IncidentStore, incident: Incident, resume: dict | Non
     )
     try:
         if resume is None:
-            incident.solo = Solo(shop=LiveShop(), tool_budget=incident.tool_budget)
+            incident.runner = _open_runner(incident)
             raw, _measured = await asyncio.to_thread(
-                incident.solo.run,
+                incident.runner.run,
                 incident.alert,
                 incident_id=incident.incident_id,
             )
         else:
-            if incident.solo is None:
+            if incident.runner is None:
                 raise RuntimeError("incident graph is not available for resume")
             raw, _measured = await asyncio.to_thread(
-                incident.solo.run,
+                incident.runner.run,
                 incident_id=incident.incident_id,
                 resume=resume,
             )
@@ -459,10 +462,38 @@ async def _resume_demo(store: IncidentStore, incident: Incident, decision: str) 
     await store.emit(incident, "verification.recovered", "Recovery verified below alert threshold")
 
 
+def _require_runnable(config_id: Topology) -> None:
+    if config_id not in RUNNABLE:
+        raise HTTPException(
+            status_code=422,
+            detail="only c1_single and c2_team are implemented",
+        )
+
+
+def _resolve_tool_budget(config_id: Topology, tool_budget: int | None) -> int:
+    """An omitted budget follows the live default for that topology."""
+    if tool_budget is not None:
+        return tool_budget
+    if config_id == "c2_team":
+        return LIVE_TOOL_BUDGET
+    return DEFAULT_TOOL_BUDGET
+
+
+def _open_runner(incident: Incident) -> Solo | Team:
+    """The same instance must resume, because its checkpointer holds the pause."""
+    shop = LiveShop()
+    if incident.config_id == "c1_single":
+        return Solo(shop=shop, tool_budget=incident.tool_budget)
+    if incident.config_id == "c2_team":
+        return Team(shop=shop, tool_budget=incident.tool_budget)
+    raise RuntimeError(f"unsupported topology {incident.config_id!r}")
+
+
 async def _accept_notification(
     store: IncidentStore,
     body: dict[str, Any],
     *,
+    config_id: Topology,
     tool_budget: int,
 ) -> dict[str, Any]:
     """Start one investigation per firing alert. A repeat of an open one is a no-op."""
@@ -481,7 +512,7 @@ async def _accept_notification(
             store,
             alert,
             incident_id=incident_id,
-            config_id="c1_single",
+            config_id=config_id,
             tool_budget=tool_budget,
         )
         snapshots.append(incident.snapshot())
@@ -527,7 +558,7 @@ def create_app(
     async def evaluation_capabilities() -> dict[str, Any]:
         """Public contract checked by the evaluator before it mutates the lab."""
         return {
-            "configurations": ["c1_single"],
+            "configurations": ["c1_single", "c2_team"],
             "approval": "exact-action-payload-hash",
             "system_run_contract": "v1",
         }
@@ -605,18 +636,23 @@ def create_app(
         alert_body: Annotated[dict[str, Any], Body()],
         incident_id: Annotated[str | None, Query()] = None,
         config_id: Annotated[Topology, Query()] = "c1_single",
-        tool_budget: Annotated[int, Query(ge=1, le=100)] = 10,
+        tool_budget: Annotated[int | None, Query(ge=1, le=100)] = None,
     ) -> dict[str, Any]:
-        if config_id != "c1_single":
-            raise HTTPException(status_code=422, detail="only c1_single is implemented")
+        _require_runnable(config_id)
+        resolved_budget = _resolve_tool_budget(config_id, tool_budget)
         if is_notification_group(alert_body):
-            return await _accept_notification(store, alert_body, tool_budget=tool_budget)
+            return await _accept_notification(
+                store,
+                alert_body,
+                config_id=config_id,
+                tool_budget=resolved_budget,
+            )
         incident = await _start_live(
             store,
             _validate_alert(alert_body),
             incident_id=incident_id or f"incident-{uuid.uuid4().hex[:12]}",
             config_id=config_id,
-            tool_budget=tool_budget,
+            tool_budget=resolved_budget,
         )
         return incident.snapshot()
 

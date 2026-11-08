@@ -79,6 +79,7 @@ button { color: inherit; }
 .connection.offline > span { background: var(--red); box-shadow: 0 0 0 4px rgba(255,107,107,.1); }
 
 .button { border: 1px solid var(--line); border-radius: 8px; padding: 9px 13px; background: var(--surface-2); cursor: pointer; font-size: 12px; font-weight: 680; transition: transform .15s ease, background .15s ease, border .15s ease; }
+.topology-select { border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; background: var(--surface-2); color: inherit; font: inherit; font-size: 12px; font-weight: 680; }
 .button:hover { transform: translateY(-1px); border-color: #3a424e; }
 .button:disabled { opacity: .45; cursor: wait; transform: none; }
 .button-primary { background: var(--lime); color: #11150b; border-color: var(--lime); }
@@ -233,7 +234,7 @@ button { color: inherit; }
 @media (max-width: 820px) {
   .app-shell { display: block; }
   .topbar { height: 68px; grid-template-columns: 1fr auto; gap: 10px; padding: 0 14px; }
-  .connection, .button-quiet, .product-nav { display: none; }
+  .connection, .button-quiet, .topology-select, .product-nav { display: none; }
   .brand-copy small { display: none; }
   .sidebar { position: static; height: auto; min-height: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: 13px; }
   .sidebar-heading, .queue-summary, .sidebar-note { display: none; }

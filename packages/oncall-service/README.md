@@ -35,9 +35,12 @@ connects it to this console and the read-only evaluation reports at
 <http://127.0.0.1:8030/>.
 
 Open <http://127.0.0.1:8000>. **Run guided demo** uses no model and no live
-infrastructure. **Start live investigation** runs the current C1 solo agent:
-Prometheus, Jaeger, and OpenSearch reads are live, while writes and verification
-still use the scripted shop.
+infrastructure. **Start live investigation** runs the selected topology.
+`c1_single` is the solo agent. `c2_team` is the commander and the specialists.
+An omitted tool budget is 10 for the solo agent and 40 for the team, because a
+live team run spends more calls before it proposes one action. Prometheus,
+Jaeger, and OpenSearch reads are live, while writes and verification still use
+the scripted shop.
 
 The console also subscribes to `GET /api/incidents/stream`. Incidents created
 from another page, `curl`, Alertmanager, or any client calling `POST /alerts`
@@ -55,10 +58,10 @@ Multiple origins can be comma-separated. There is intentionally no wildcard
 default because this API can start an agent and expose incident data.
 
 The evaluation harness calls `GET /api/evaluation-capabilities` before fault
-injection. The response currently advertises only `c1_single`, the exact-action
-payload-hash approval gate, and SystemRun contract v1. A topology must not be
-added to that response until it works through the complete HTTP start,
-approval/resume, terminal-result path.
+injection. The response advertises `c1_single` and `c2_team`, the exact-action
+payload-hash approval gate, and SystemRun contract v1. Both topologies start,
+pause for approval, resume the same runner, and finish over HTTP. `c0_workflow`
+is not advertised.
 
 For example:
 

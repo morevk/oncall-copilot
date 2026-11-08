@@ -113,6 +113,22 @@ def remaining_budget(state) -> int:
     return max(int(budget) - int(state.get("tool_calls") or 0), 0)
 
 
+# A live triage that searches every service otherwise spends the incident
+# budget. Diagnosis was then given that same full budget again, so the runbook
+# and the one proposal found nothing left and the run stopped with no action.
+# Two searches and the set_flag call stay available after investigation.
+RUNBOOK_RESERVE = 2
+REMEDIATION_RESERVE = 1
+
+
+def investigation_budget(state, *, default_budget: int = 0) -> int:
+    """Calls triage and diagnosis may spend. The tail is kept for the proposal."""
+    total = state.get("tool_budget")
+    total = default_budget if total is None else int(total)
+    spent = int(state.get("tool_calls") or 0)
+    return max(total - spent - RUNBOOK_RESERVE - REMEDIATION_RESERVE, 0)
+
+
 def alert_summary(alert) -> str:
     """The human-readable alert line. A bare string is that line."""
     if isinstance(alert, str):

@@ -1,6 +1,7 @@
 import sqlite3
 import time
 from pathlib import Path
+from typing import ClassVar
 
 from fastapi.testclient import TestClient
 from oncall_service.main import create_app
@@ -27,13 +28,15 @@ def test_health_and_console_are_served():
     assert health.status_code == 200
     assert health.json() == {"status": "ok"}
     assert capabilities.json() == {
-        "configurations": ["c1_single"],
+        "configurations": ["c1_single", "c2_team"],
         "approval": "exact-action-payload-hash",
         "system_run_contract": "v1",
     }
     assert page.status_code == 200
     assert "Incident Console" in page.text
     assert "No incident selected" in page.text
+    assert 'id="topology-select"' in page.text
+    assert "C2 team" in page.text
 
 
 def test_demo_streams_to_approval_and_exact_hash_recovers():
@@ -175,3 +178,131 @@ def test_configured_frontend_origin_can_post_alerts():
 
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://localhost:5173"
+
+
+ALERT = {
+    "status": "firing",
+    "labels": {
+        "alertname": "CheckoutErrorRateHigh",
+        "service": "checkout",
+        "severity": "critical",
+    },
+    "annotations": {"summary": "Checkout failures exceed 5%"},
+    "startsAt": "2026-11-02T00:00:00Z",
+}
+
+
+def _install_runners(monkeypatch, *, team_pauses: bool = False):
+    """Stand in for both topologies so a test never builds an OpenRouter client."""
+
+    class Shop:
+        def __init__(self):
+            self.writes = []
+
+    def runner(name: str, pauses: bool):
+        class Runner:
+            built: ClassVar[list] = []
+
+            def __init__(self, shop=None, tool_budget=10, **kwargs):
+                self.shop = shop
+                self.tool_budget = tool_budget
+                self.extra = kwargs
+                self.resumes: list = []
+                self.built.append(self)
+
+            def run(self, alert="", *, incident_id="incident", resume=None):
+                self.resumes.append(resume)
+                if resume is None and pauses:
+                    return (
+                        {
+                            "__interrupt__": [
+                                {
+                                    "command": {"action": "set_flag", "args": {}},
+                                    "expected_effect": "recover",
+                                    "payload_hash": "hash-1",
+                                }
+                            ],
+                            "plan": {"stage": "act"},
+                        },
+                        None,
+                    )
+                status = "RECOVERED" if resume is not None else "ESCALATED"
+                return ({"status": status, "stage": "communicate"}, None)
+
+        Runner.__name__ = name
+        return Runner
+
+    solo = runner("Solo", pauses=False)
+    team = runner("Team", pauses=team_pauses)
+    monkeypatch.setattr("oncall_service.main.LiveShop", Shop)
+    monkeypatch.setattr("oncall_service.main.Solo", solo)
+    monkeypatch.setattr("oncall_service.main.Team", team)
+    return solo, team, Shop
+
+
+def test_omitted_budget_starts_the_solo_runner(monkeypatch):
+    solo, team, shop = _install_runners(monkeypatch)
+    with TestClient(create_app(demo_delay=0)) as client:
+        started = client.post("/alerts", json=ALERT)
+        assert started.status_code == 202
+        incident_id = started.json()["incident_id"]
+        finished = _wait_for_status(client, incident_id, "ESCALATED")
+
+    assert finished["config_id"] == "c1_single"
+    assert finished["tool_budget"] == 10
+    assert len(solo.built) == 1
+    assert isinstance(solo.built[0].shop, shop)
+    assert solo.built[0].tool_budget == 10
+    assert team.built == []
+
+
+def test_team_alert_uses_the_live_budget_and_resumes_the_same_runner(monkeypatch):
+    solo, team, shop = _install_runners(monkeypatch, team_pauses=True)
+    with TestClient(create_app(demo_delay=0)) as client:
+        started = client.post("/alerts?config_id=c2_team", json=ALERT)
+        assert started.status_code == 202
+        body = started.json()
+        assert body["config_id"] == "c2_team"
+        assert body["tool_budget"] == 40
+        incident_id = body["incident_id"]
+        waiting = _wait_for_status(client, incident_id, "AWAITING_APPROVAL")
+        approved = client.post(
+            f"/incidents/{incident_id}/approve",
+            json={"decision": "approve", "payload_hash": waiting["approval"]["payload_hash"]},
+        )
+        assert approved.status_code == 200
+        recovered = _wait_for_status(client, incident_id, "RECOVERED")
+
+    assert recovered["terminal"]
+    assert len(team.built) == 1
+    assert isinstance(team.built[0].shop, shop)
+    assert team.built[0].tool_budget == 40
+    assert team.built[0].extra == {}
+    assert team.built[0].resumes == [
+        None,
+        {"decision": "approve", "payload_hash": "hash-1"},
+    ]
+    assert solo.built == []
+
+
+def test_explicit_team_budget_is_kept(monkeypatch):
+    _solo, team, _shop = _install_runners(monkeypatch)
+    with TestClient(create_app(demo_delay=0)) as client:
+        started = client.post("/alerts?config_id=c2_team&tool_budget=12", json=ALERT)
+        assert started.status_code == 202
+        incident_id = started.json()["incident_id"]
+        finished = _wait_for_status(client, incident_id, "ESCALATED")
+
+    assert finished["tool_budget"] == 12
+    assert team.built[0].tool_budget == 12
+
+
+def test_unimplemented_topology_is_rejected_before_a_runner_starts(monkeypatch):
+    solo, team, _shop = _install_runners(monkeypatch)
+    with TestClient(create_app(demo_delay=0)) as client:
+        response = client.post("/alerts?config_id=c0_workflow", json=ALERT)
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "only c1_single and c2_team are implemented"
+    assert solo.built == []
+    assert team.built == []
