@@ -23,6 +23,7 @@ from oncall_graph.config import DEFAULT_TOOL_BUDGET, LIVE_TOOL_BUDGET
 from oncall_graph.nodes.remediate import command_payload, payload_hash
 from oncall_graph.topologies.c1_single import Solo, interrupt_value
 from oncall_graph.topologies.c2_team import Team
+from oncall_memory import LessonStore
 from pydantic import BaseModel
 
 from .alerts import AlertPayloadError, firing_alerts, is_notification_group
@@ -275,7 +276,7 @@ def _system_run(incident: Incident, raw: dict[str, Any]) -> dict[str, Any]:
             isinstance(item, dict) and item.get("tool") == "rollback" for item in writes
         ),
         "model_ids": model_ids,
-        "playbook_hash": None,
+        "playbook_hash": _playbook_hash(incident),
         "error": incident.error,
     }
 
@@ -479,13 +480,25 @@ def _resolve_tool_budget(config_id: Topology, tool_budget: int | None) -> int:
     return DEFAULT_TOOL_BUDGET
 
 
+def _playbook_hash(incident: Incident) -> str | None:
+    """The playbook the team run actually filtered. Solo does not read one."""
+    store = getattr(incident.runner, "store", None)
+    digest = getattr(store, "playbook_hash", None)
+    return digest if isinstance(digest, str) and digest else None
+
+
 def _open_runner(incident: Incident) -> Solo | Team:
     """The same instance must resume, because its checkpointer holds the pause."""
     shop = LiveShop()
     if incident.config_id == "c1_single":
         return Solo(shop=shop, tool_budget=incident.tool_budget)
     if incident.config_id == "c2_team":
-        return Team(shop=shop, tool_budget=incident.tool_budget)
+        # Objective 3. c1_single does not filter lessons; the team runbook step does.
+        return Team(
+            shop=shop,
+            store=LessonStore.from_postmortems(),
+            tool_budget=incident.tool_budget,
+        )
     raise RuntimeError(f"unsupported topology {incident.config_id!r}")
 
 

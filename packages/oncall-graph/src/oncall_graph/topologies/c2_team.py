@@ -61,6 +61,7 @@ from ..handoffs import (
     evidence_from_exchanges,
     exchanges_from_messages,
     focus_service,
+    lesson_drop_line,
     load_lessons,
     partition_passages,
     passages_from_exchanges,
@@ -603,7 +604,7 @@ class Team:
         kept_lessons, dropped_lessons = load_lessons(self.store, service=service, symptom=symptom)
         lines = ["runbook " + ", ".join(str(item.get("id") or "") for item in kept_passages)]
         for lesson in dropped_lessons:
-            lines.append(f"dropped lesson {lesson.get('id')}")
+            lines.append(lesson_drop_line(lesson, service=service, symptom=symptom))
         for passage in dropped_passages:
             lines.append(f"dropped passage {passage.get('id')}")
         return {
@@ -626,6 +627,21 @@ class Team:
         result_box = (state.get("last") or {}).get("result") or {}
         passages = result_box.get("passages") or []
         lessons = result_box.get("lessons") or []
+        if not passages:
+            # An empty match is not a license to invent a flag. The approval
+            # gate stays shut; propose_one_action escalates.
+            return {
+                "tool_calls": _absolute_calls(state, 0),
+                "meter_rows": [],
+                "status": "RUNNING",
+                "why": "no runbook passage matched",
+                "last": {"result": {"proposals": [], "passages": [], "lessons": lessons}},
+                "transcript": transcript_lines(
+                    "remediation",
+                    "remediation proposed nothing",
+                    "no runbook passage matched",
+                ),
+            }
         guidance = runbook_guidance(passages, lessons)
         verification = state.get("verification") or {}
         verification_line = ""
@@ -737,7 +753,16 @@ def route_propose(state) -> str:
 
 def propose_one_action(state):
     """Park the one proposal beside the plan. Diagnosis already wrote the hypotheses."""
-    proposals = ((state.get("last") or {}).get("result") or {}).get("proposals") or []
+    result = (state.get("last") or {}).get("result") or {}
+    proposals = result.get("proposals") or []
+    passages = result.get("passages")
+    if passages is not None and not passages:
+        return {
+            "status": "ESCALATED",
+            "route": "stop",
+            "why": "no runbook passage matched",
+            "transcript": transcript_lines("propose", "no action proposed"),
+        }
     if not proposals:
         return {
             "status": "ESCALATED",

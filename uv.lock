@@ -1383,6 +1383,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "oncall-contracts" },
     { name = "oncall-graph" },
+    { name = "oncall-memory" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -1391,6 +1392,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "oncall-contracts", editable = "packages/oncall-contracts" },
     { name = "oncall-graph", editable = "packages/oncall-graph" },
+    { name = "oncall-memory", editable = "packages/oncall-memory" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
 ]
 

@@ -89,9 +89,8 @@ class Lesson:
         """The shape `oncall_graph.handoffs.partition_lessons` reads.
 
         `status` is always present and always explicit. `partition_lessons`
-        defaults a missing status to "approved" -- fail-open -- so a lesson that
-        lost its status in transit would be applied as reviewed guidance. Nothing
-        this store emits can take that branch.
+        keeps only `approved`, so a lesson that lost its status in transit is
+        dropped rather than shown as guidance.
         """
         return {
             "id": self.lesson_id,

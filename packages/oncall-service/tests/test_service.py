@@ -277,7 +277,8 @@ def test_team_alert_uses_the_live_budget_and_resumes_the_same_runner(monkeypatch
     assert len(team.built) == 1
     assert isinstance(team.built[0].shop, shop)
     assert team.built[0].tool_budget == 40
-    assert team.built[0].extra == {}
+    assert set(team.built[0].extra) == {"store"}
+    assert team.built[0].extra["store"].__class__.__name__ == "LessonStore"
     assert team.built[0].resumes == [
         None,
         {"decision": "approve", "payload_hash": "hash-1"},
