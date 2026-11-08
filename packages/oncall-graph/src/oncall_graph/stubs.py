@@ -291,8 +291,11 @@ class Shop:
                 {
                     "id": "rb-payment-service-failed",
                     "service": "payment",
-                    "symptom": "payment service failed",
-                    "preconditions": {"service": "payment", "symptom": "payment service failed"},
+                    "symptom": "Fail payment service charge requests n%",
+                    "preconditions": {
+                        "service": "payment",
+                        "symptom": "Fail payment service charge requests n%",
+                    },
                     "fix": "set_flag paymentFailure variant off",
                 },
                 {

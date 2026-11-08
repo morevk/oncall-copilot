@@ -17,5 +17,5 @@ DEFAULT_TOOL_BUDGET = 10
 # Live team runs. A paymentFailure run against the lab spent 22 calls before
 # the proposal (8 triage, 12 across the two diagnosis copies, then the runbook
 # and the remediation), and at 20 the monitor stopped instead of correcting.
-LIVE_TOOL_BUDGET = 30
+LIVE_TOOL_BUDGET = 40
 DEFAULT_MAX_REVISIONS = 3

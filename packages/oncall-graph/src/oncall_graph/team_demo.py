@@ -22,7 +22,7 @@ from .stubs import Shop
 from .topologies.c1_single import interrupt_value
 from .topologies.c2_team import Team
 
-PAYMENT_ALERT = {
+PAYMENT_CHARGE_REQUESTS_ALERT = {
     "status": "firing",
     "labels": {"alertname": "PaymentServiceFailed", "service": "payment"},
     "annotations": {"summary": "Fail payment service charge requests n%"},
@@ -71,7 +71,7 @@ def main(argv=None) -> None:
         # all of it, so 10 leaves room for triage, the runbook, and the proposal.
         team = Team(shop=shop, tool_budget=10)
     incident = "live-team" if args.live else "scripted-team"
-    paused, measured = team.run(PAYMENT_UNAVAILABLE_ALERT, incident_id=incident)
+    paused, measured = team.run(PAYMENT_CHARGE_REQUESTS_ALERT, incident_id=incident)
     intr = interrupt_value(paused)
     print("status:", paused.get("status"))
     print("scope:", paused.get("scope"))

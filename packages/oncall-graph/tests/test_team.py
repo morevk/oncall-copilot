@@ -220,9 +220,9 @@ def test_severity_comes_from_the_policy_not_a_label():
 
 
 def test_payment_service_failed_has_its_own_runbook_passage():
-    passages = Shop().search_runbooks("payment service failed")["passages"]
+    passages = Shop().search_runbooks("Fail payment service charge requests n%")["passages"]
     kept, dropped = partition_passages(
-        passages, service="payment", symptom="payment service failed"
+        passages, service="payment", symptom="Fail payment service charge requests n%"
     )
     assert [item["id"] for item in kept] == ["rb-payment-service-failed"]
     assert kept[0]["fix"] == "set_flag paymentFailure variant off"
