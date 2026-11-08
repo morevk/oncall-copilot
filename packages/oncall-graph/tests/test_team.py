@@ -288,14 +288,15 @@ def test_commander_opens_on_the_alert_service_and_corrects_after_reports():
     assert "paymentFailure" in corrected["hypotheses"][0]["statement"]
 
 
-def test_diagnosis_allowances_sum_to_the_incident_budget():
+def test_diagnosis_allowances_leave_the_proposal_calls():
+    """Three calls stay reserved: two runbook searches and the one proposal."""
     team = Team(model=TeamModel(), tool_budget=10)
     state = new_incident(alert=ALERT, tool_budget=10)
     state["scope"] = {"services": ["payment", "checkout"]}
     state["severity"] = "sev2"
     sends = team.route_diagnosis(state)
-    assert [send.arg["tool_budget_slice"] for send in sends] == [5, 5]
-    assert sum(send.arg["tool_budget_slice"] for send in sends) == 10
+    assert [send.arg["tool_budget_slice"] for send in sends] == [4, 3]
+    assert sum(send.arg["tool_budget_slice"] for send in sends) == 7
     assert {send.arg["service"] for send in sends} == {"payment", "checkout"}
     for send in sends:
         assert "transcript" not in send.arg
@@ -305,8 +306,19 @@ def test_diagnosis_allowances_sum_to_the_incident_budget():
     one = single.route_diagnosis(state)
     assert len(one) == 1
     assert one[0].arg["services"] == ["payment", "checkout"]
-    assert one[0].arg["tool_budget_slice"] == 10
+    assert one[0].arg["tool_budget_slice"] == 7
     assert "service" not in one[0].arg
+
+
+def test_diagnosis_does_not_respend_calls_triage_already_used():
+    """A live triage searched every service and left 7 of 40. Diagnosis gets 4."""
+    team = Team(model=TeamModel(), tool_budget=40)
+    state = new_incident(alert=ALERT, tool_budget=40)
+    state["tool_calls"] = 33
+    state["scope"] = {"services": ["payment", "checkout", "flagd"]}
+    sends = team.route_diagnosis(state)
+    assert [send.arg["tool_budget_slice"] for send in sends] == [2, 1, 1]
+    assert sum(send.arg["tool_budget_slice"] for send in sends) == 4
 
 
 def test_a_trace_list_without_a_verdict_is_not_a_denial():
@@ -428,7 +440,7 @@ def test_checkout_alert_replans_then_proposes_the_flag():
     assert all("no local cause" not in prompt for prompt in payment_prompts)
     assert all("User-Agent" not in prompt for prompt in payment_prompts)
     assert all("span attribute paymentFailure" not in prompt for prompt in checkout_prompts)
-    assert all("Tool calls allowed: 5." in prompt for prompt in payment_prompts)
+    assert all("Tool calls allowed: 3." in prompt for prompt in payment_prompts)
     remediation = [prompt for prompt in model.prompts if "Agent: remediation" in prompt]
     assert any("turn the paymentFailure flag off" in prompt for prompt in remediation)
     assert all("restart every service from the ad lesson" not in prompt for prompt in remediation)
@@ -460,7 +472,7 @@ def test_one_investigator_gets_the_whole_budget_and_both_suspects():
         if prompt.startswith("Agent: diagnosis\n") or "\nAgent: diagnosis\n" in prompt
     ]
     assert any("Suspects: payment, checkout" in prompt for prompt in diagnosis_prompts)
-    assert any("Tool calls allowed: 10." in prompt for prompt in diagnosis_prompts)
+    assert any("Tool calls allowed: 5." in prompt for prompt in diagnosis_prompts)
     assert paused["proposed_action"]["action"] == "set_flag"
 
 

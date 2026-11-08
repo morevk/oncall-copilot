@@ -22,6 +22,10 @@
         </nav>
         <div class="topbar-context">
           <span class="connection" id="connection"><span></span> API connected</span>
+          <select class="topology-select" id="topology-select" aria-label="Topology">
+            <option value="c1_single">C1 solo</option>
+            <option value="c2_team">C2 team</option>
+          </select>
           <button class="button button-quiet" id="live-button" type="button">Start live investigation</button>
           <button class="button button-primary" id="demo-button" type="button">
             <span aria-hidden="true">▶</span> Run guided demo
@@ -68,6 +72,7 @@
               <div class="incident-kicker">
                 <span class="status-pill" id="status-pill">QUEUED</span>
                 <span id="incident-mode">demo</span>
+                <span id="incident-config">c1_single</span>
                 <span class="muted" id="incident-id">—</span>
               </div>
               <h1 id="incident-title">CheckoutErrorRateHigh</h1>

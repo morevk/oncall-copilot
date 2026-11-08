@@ -173,6 +173,7 @@ function renderIncident() {
   $("status-pill").textContent = incident.status;
   $("status-pill").className = `status-pill ${statusClass(incident.status)}`;
   $("incident-mode").textContent = incident.mode;
+  $("incident-config").textContent = incident.config_id || "";
   $("incident-id").textContent = incident.incident_id;
   $("incident-title").textContent = labels.alertname || "Incident";
   $("incident-summary").textContent = annotations.summary || "No summary provided";
@@ -297,7 +298,8 @@ async function startLive() {
     startsAt: new Date().toISOString(),
   };
   try {
-    const incident = await api("/alerts?config_id=c1_single&tool_budget=10", { method: "POST", body: JSON.stringify(alert) });
+    const configId = $("topology-select").value;
+    const incident = await api(`/alerts?config_id=${encodeURIComponent(configId)}`, { method: "POST", body: JSON.stringify(alert) });
     await loadIncidents();
     await selectIncident(incident.incident_id);
     showToast("Live investigation started");
@@ -320,7 +322,7 @@ async function decide(decision) {
 }
 
 function setBusy(busy) {
-  ["demo-button", "empty-demo-button", "live-button", "approve-button", "reject-button"].forEach((id) => {
+  ["demo-button", "empty-demo-button", "live-button", "topology-select", "approve-button", "reject-button"].forEach((id) => {
     $(id).disabled = busy;
   });
 }
