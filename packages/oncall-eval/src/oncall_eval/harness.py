@@ -3,41 +3,31 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections import defaultdict
 from pathlib import Path
-from typing import Any
 
-from .cases import EvalCase, load_case, validate_case
-from .http_client import IncidentApiClient
-from .injector import FlagdFaultInjector
-from .manifest import load_manifest
-from .runner import EvaluationRunner, load_run_record
-from .signals import PollPolicy, PrometheusClient, SignalPoller
+from .cases import EvalCase
+from .execution import (
+    EvaluationEvent,
+    EvaluationRefused,
+    EvaluationRequest,
+    EvaluationSettings,
+    execute_evaluation,
+    load_validated_cases,
+)
+from .http_client import IncidentApiError
+from .injector import FaultInjectionError
+from .live_lock import LiveEvaluationLocked
+from .runner import load_run_record
+from .signals import SignalReadError
 
 
 def _is_heldout(path: Path) -> bool:
     return any(
         part.casefold().replace("-", "").replace("_", "") == "heldout" for part in path.parts
     )
-
-
-def _load_cases(cases_dir: Path, manifest_path: Path) -> tuple[list[EvalCase], dict[str, Any]]:
-    faults = load_manifest(manifest_path)
-    paths = sorted(cases_dir.glob("*.json"))
-    if not paths:
-        raise ValueError(f"no case files found in {cases_dir}")
-    cases = []
-    problems = []
-    for path in paths:
-        case = load_case(path)
-        if issues := validate_case(case, faults):
-            problems.extend(f"{path.name}: {issue}" for issue in issues)
-        else:
-            cases.append(case)
-    if problems:
-        raise ValueError("invalid evaluation cases:\n" + "\n".join(problems))
-    return cases, faults
 
 
 def _record_passed(case: EvalCase, record: dict) -> bool:
@@ -53,7 +43,7 @@ def _record_passed(case: EvalCase, record: dict) -> bool:
 
 def run_mock(args: argparse.Namespace) -> int:
     try:
-        cases, _faults = _load_cases(args.cases, args.manifest)
+        cases, _faults = load_validated_cases(args.cases, args.manifest)
     except ValueError as exc:
         print(f"mock FAIL: {exc}")
         return 1
@@ -100,53 +90,6 @@ def run_mock(args: argparse.Namespace) -> int:
     return 0 if not contract_failures and rate >= args.fail_under else 1
 
 
-def run_live(args: argparse.Namespace) -> int:
-    if not args.yes_inject_faults:
-        print("live mode refused: pass --yes-inject-faults to acknowledge lab mutation")
-        return 2
-    try:
-        cases, faults = _load_cases(args.cases, args.manifest)
-    except ValueError as exc:
-        print(f"live FAIL: {exc}")
-        return 1
-
-    injector = FlagdFaultInjector(args.flagd_config)
-    poller = SignalPoller(
-        PrometheusClient(args.prometheus_url),
-        PollPolicy(
-            timeout_seconds=args.signal_timeout,
-            interval_seconds=args.signal_interval,
-            consecutive_successes=args.signal_successes,
-        ),
-    )
-    runner = EvaluationRunner(
-        injector=injector,
-        poller=poller,
-        system=IncidentApiClient(
-            args.api_url,
-            run_timeout_seconds=args.run_timeout,
-            poll_interval_seconds=args.api_poll_interval,
-        ),
-        artifacts_dir=args.artifacts,
-    )
-
-    passed = 0
-    grouped: dict[str, list[bool]] = defaultdict(list)
-    print(f"live mode: running {len(cases)} case(s) against {args.config}")
-    for case in cases:
-        result = runner.run(case, faults[case["fault_id"]], args.config)
-        passed += int(result.score.passed)
-        grouped[case["complexity"]].append(result.score.passed)
-        suffix = "" if result.score.passed else f" — {'; '.join(result.score.reasons)}"
-        print(f"  {case['case_id']}: {'PASS' if result.score.passed else 'FAIL'}{suffix}")
-        print(f"    record: {result.artifact_path}")
-
-    _print_groups(grouped, args.group_by)
-    rate = passed / len(cases)
-    print(f"pass rate: {passed}/{len(cases)} = {rate:.3f}; required {args.fail_under:.3f}")
-    return 0 if rate >= args.fail_under else 1
-
-
 def _print_groups(grouped: dict[str, list[bool]], group_by: str | None) -> None:
     if group_by != "complexity":
         return
@@ -155,15 +98,103 @@ def _print_groups(grouped: dict[str, list[bool]], group_by: str | None) -> None:
         print(f"  {name}: {sum(values)}/{len(values)}")
 
 
+def _settings(args: argparse.Namespace) -> EvaluationSettings:
+    return EvaluationSettings(
+        cases_dir=args.cases,
+        manifest_path=args.manifest,
+        flagd_config=args.flagd_config,
+        prometheus_url=args.prometheus_url,
+        api_url=args.api_url,
+        artifacts_dir=args.artifacts,
+        lock_file=args.lock_file,
+        fail_under=args.fail_under,
+        group_by=args.group_by,
+        run_timeout=args.run_timeout,
+        api_poll_interval=args.api_poll_interval,
+        signal_timeout=args.signal_timeout,
+        signal_interval=args.signal_interval,
+        signal_successes=args.signal_successes,
+    )
+
+
+# Historical CLI output is the live/preflight result lines. The extra phases
+# exist for the Control Center and must not change `make eval-live-dev`.
+_CLI_PHASES = frozenset({"injecting", "scoring", "complete"})
+
+
+def _print_event(event: EvaluationEvent) -> None:
+    if event.phase in _CLI_PHASES and event.message:
+        print(event.message)
+
+
+def run_live(args: argparse.Namespace) -> int:
+    if not args.yes_inject_faults:
+        print("live mode refused: pass --yes-inject-faults to acknowledge lab mutation")
+        return 2
+    try:
+        result = execute_evaluation(
+            EvaluationRequest(kind="deterministic", config_id=args.config),
+            _settings(args),
+            _print_event,
+        )
+    except ValueError as exc:
+        print(f"live FAIL: {exc}")
+        return 1
+    except EvaluationRefused as exc:
+        print(f"live mode refused before fault injection: {exc}")
+        return 2
+    except (LiveEvaluationLocked, OSError) as exc:
+        print(f"live mode lock unavailable: {exc}")
+        return 2
+    return 0 if result.passed else 1
+
+
+def run_preflight(args: argparse.Namespace) -> int:
+    """Check the complete C1 boundary without injecting or executing a fault."""
+    try:
+        execute_evaluation(
+            EvaluationRequest(kind="preflight", config_id=args.config),
+            _settings(args),
+            _print_event,
+        )
+    except ValueError as exc:
+        print(f"preflight FAIL: {exc}")
+        return 1
+    except (
+        FaultInjectionError,
+        IncidentApiError,
+        LiveEvaluationLocked,
+        OSError,
+        SignalReadError,
+    ) as exc:
+        print(f"preflight FAIL: {exc}")
+        return 2
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run On-Call Copilot evaluations.")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--mock", action="store_true", help="replay committed development fixtures")
+    mode.add_argument(
+        "--preflight", action="store_true", help="check live dependencies without injecting a fault"
+    )
     mode.add_argument("--live", action="store_true", help="inject faults and call the incident API")
     parser.add_argument("--cases", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, default=Path("eval/faults/manifest.yaml"))
     parser.add_argument("--fixtures", type=Path, default=Path("eval/fixtures"))
-    parser.add_argument("--artifacts", type=Path, default=Path("artifacts/runs"))
+    parser.add_argument(
+        "--artifacts",
+        type=Path,
+        default=Path(os.environ.get("ONCALL_EVAL_RUNS", "artifacts/runs")),
+    )
+    parser.add_argument(
+        "--lock-file",
+        type=Path,
+        default=Path(
+            os.environ.get("ONCALL_EVAL_LOCK_FILE", "artifacts/locks/live-evaluation.lock")
+        ),
+    )
     parser.add_argument("--fail-under", type=float, required=True)
     parser.add_argument(
         "--config", choices=("c0_workflow", "c1_single", "c2_team"), default="c1_single"
@@ -171,9 +202,18 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--group-by", choices=("complexity",), default=None)
     parser.add_argument("--allow-heldout", action="store_true")
     parser.add_argument("--yes-inject-faults", action="store_true")
-    parser.add_argument("--api-url", default="http://localhost:8000")
-    parser.add_argument("--prometheus-url", default="http://10.241.2.69:9090")
-    parser.add_argument("--flagd-config", type=Path, default=Path("deploy/flagd/demo.flagd.json"))
+    parser.add_argument(
+        "--api-url", default=os.environ.get("ONCALL_SERVICE_URL", "http://localhost:8000")
+    )
+    parser.add_argument(
+        "--prometheus-url",
+        default=os.environ.get("PROMETHEUS_URL", "http://10.241.2.69:9090"),
+    )
+    parser.add_argument(
+        "--flagd-config",
+        type=Path,
+        default=Path(os.environ.get("FLAGD_CONFIG", "deploy/flagd/demo.flagd.json")),
+    )
     parser.add_argument("--run-timeout", type=float, default=600.0)
     parser.add_argument("--api-poll-interval", type=float, default=1.0)
     parser.add_argument("--signal-timeout", type=float, default=120.0)
@@ -189,7 +229,11 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--fail-under must be between 0 and 1")
     if _is_heldout(args.cases) and not args.allow_heldout:
         parser.error("held-out cases require the explicit --allow-heldout acknowledgement")
-    return run_mock(args) if args.mock else run_live(args)
+    if args.mock:
+        return run_mock(args)
+    if args.preflight:
+        return run_preflight(args)
+    return run_live(args)
 
 
 if __name__ == "__main__":

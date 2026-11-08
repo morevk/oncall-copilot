@@ -27,11 +27,25 @@ class RunRecord(TypedDict):
     correct_root_cause: bool  # top-1
     root_cause_rank: int | None  # for top-3; None if never proposed
     correct_action_proposed: bool
-    verified_recovery: bool
+    # Recovery has three distinct witnesses.  The system's claim is useful
+    # evidence, but it is not enough to pass a scored run.  The harness checks
+    # the recovery signal while the fault is still under the system's control,
+    # then separately proves that its own cleanup restored the baseline.
+    system_reported_recovery: bool
+    independently_verified_recovery: bool
+    cleanup_verified: bool
+    verified_recovery: bool  # system claim AND independent observation
     harmful_actions: int  # target is zero
     rolled_back: bool
+    within_tool_budget: bool
+
+    # Final deterministic verdict. Persisting this prevents read-only consumers
+    # from needing the held-out EvalCase in order to reproduce PASS/FAIL.
+    passed: bool
+    failure_reasons: list[str]
 
     # Provenance, so a result can be tied to what produced it.
     model_ids: dict[str, str]
     playbook_hash: NotRequired[str | None]
     error: NotRequired[str | None]
+    source_incident_id: NotRequired[str]

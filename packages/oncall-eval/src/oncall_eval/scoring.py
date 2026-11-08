@@ -34,6 +34,7 @@ class Score:
     correct_action_proposed: bool
     harmful_actions: int
     within_tool_budget: bool
+    independently_verified_recovery: bool
     passed: bool
     reasons: tuple[str, ...]
 
@@ -69,7 +70,12 @@ def _harmful_actions(actions: list[FaultAction], expected: FaultAction | None) -
     return harmful
 
 
-def score_run(case: EvalCase, run: SystemRun) -> Score:
+def score_run(
+    case: EvalCase,
+    run: SystemRun,
+    *,
+    independently_verified_recovery: bool,
+) -> Score:
     """Score without a model judge or fuzzy prose comparison."""
     expected = case["expected"]
     expected_roots = _normalise_services(expected["root_cause_services"])
@@ -90,6 +96,8 @@ def score_run(case: EvalCase, run: SystemRun) -> Score:
         reasons.append("incorrect action proposal")
     if not run["verified_recovery"]:
         reasons.append("recovery not verified by the system")
+    elif not independently_verified_recovery:
+        reasons.append("system recovery claim was not independently observed")
     if harmful != expected["harmful_actions"]:
         reasons.append(
             f"harmful actions: expected {expected['harmful_actions']}, observed {harmful}"
@@ -105,6 +113,7 @@ def score_run(case: EvalCase, run: SystemRun) -> Score:
         correct_action_proposed=correct_action,
         harmful_actions=harmful,
         within_tool_budget=within_budget,
+        independently_verified_recovery=independently_verified_recovery,
         passed=not reasons,
         reasons=tuple(reasons),
     )

@@ -14,8 +14,26 @@ def test_compose_publishes_the_lab_beside_the_incident_api():
     assert "oncall-lab:" in compose
     assert '"8020:8020"' in compose
     assert "ONCALL_ALERTS_URL: http://oncall-service:8000/alerts" in compose
+    assert "ONCALL_EVALUATION_URL: http://localhost:8030/" in compose
+    assert "ONCALL_PROBE_PROMETHEUS: http://prometheus:9090/-/ready" in compose
+    assert "ONCALL_PROBE_GRAFANA: http://grafana:3000/api/health" in compose
+    assert "ONCALL_PROBE_JAEGER: http://jaeger:16686/jaeger/ui/" in compose
+    assert "ONCALL_PROBE_FLAGS: http://flagd-ui:4000/" in compose
+    assert "ONCALL_PROBE_MCP_TELEMETRY: http://mcp-telemetry:8101/mcp" in compose
     assert "/eval/faults/manifest.yaml:/lab/manifest.yaml:ro" in compose
+    assert "/eval/dev:/eval/dev:ro" in compose
     assert "/deploy/flagd:/etc/flagd" in compose
+    assert "/artifacts:/artifacts" in compose
+    assert compose.count("/artifacts:/artifacts") >= 2
+    assert "ONCALL_EVAL_CASES: /eval/dev" in compose
+    assert "ONCALL_EVAL_ARTIFACTS: /artifacts" in compose
+    assert "ONCALL_EVAL_JOBS_DATABASE: /artifacts/evaluation-jobs.sqlite3" in compose
+    assert "ONCALL_INCIDENT_DATABASE: /artifacts/incidents.sqlite3" in compose
+    assert "ONCALL_EVAL_LOCK_FILE: /artifacts/locks/live-evaluation.lock" in compose
+    assert "PROMETHEUS_URL: http://prometheus:9090" in compose
+    assert "ONCALL_API_URL: http://oncall-service:8000" in compose
+    assert "eval/heldout" not in compose
+    assert "heldout" not in compose
     # Was `assert "build oncall-service oncall-lab" in makefile`. `up` no longer
     # names the images it builds: it derives them from the services this overlay
     # defines, because the hardcoded pair was written before the three mcp-*
@@ -38,5 +56,8 @@ def test_compose_publishes_the_lab_beside_the_incident_api():
     ).stdout.split()
     assert "oncall-lab" in built, f"make up would not build the lab; it builds {built}"
     assert "oncall-service" in built
+    assert "oncall-eval-dashboard" in built
     assert "localhost:8020/healthz" in makefile
+    assert "localhost:8030/healthz" in makefile
     assert "http://localhost:8020/" in makefile
+    assert "http://localhost:8030/" in makefile

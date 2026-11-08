@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Protocol, get_args
 
 from oncall_contracts.config import Topology
-from oncall_contracts.faults import FaultSpec
+from oncall_contracts.faults import FaultAction, FaultSpec
 from oncall_contracts.runrecord import RunRecord
 from oncall_contracts.state import Alert
 
@@ -35,6 +35,7 @@ class SystemUnderTest(Protocol):
         incident_id: str,
         config_id: Topology,
         tool_budget: int,
+        expected_action: FaultAction | None,
     ) -> SystemRun: ...
 
 
@@ -92,7 +93,16 @@ class EvaluationRunner:
                         incident_id=incident_id,
                         config_id=config_id,
                         tool_budget=case["expected"]["max_tool_calls"],
+                        expected_action=case["expected"]["correct_action"],
                     )
+                    # The service's recovery claim is not ground truth.  Check
+                    # the fault's recovery signal before leaving the injector
+                    # context, while cleanup has not had a chance to make the
+                    # signal healthy on the system's behalf.
+                    if output.get("verified_recovery") is True:
+                        observed.system_recovery = self.poller.wait(
+                            fault["recovery"], phase="system_recovery"
+                        )
                 finally:
                     latency_ms = max(0, round((self.clock() - started) * 1000))
         except Exception as exc:  # noqa: BLE001 - failures must become durable run records
@@ -105,27 +115,35 @@ class EvaluationRunner:
             output["error"] = _join_errors(output.get("error"), harness_error)
 
         try:
-            _validate_system_run(output)
-            score = score_run(case, output)
-            record = _record(
+            validate_system_run(output)
+            score = score_run(
+                case,
+                output,
+                independently_verified_recovery=bool(
+                    observation is not None and observation.system_recovery is not None
+                ),
+            )
+            record = build_run_record(
                 run_id=run_id,
                 case=case,
                 config_id=config_id,
                 output=output,
                 score=score,
                 latency_ms=latency_ms,
+                observation=observation,
             )
         except (KeyError, TypeError, ValueError) as exc:
             error = _join_errors(harness_error, f"invalid system result: {exc}")
             output = _empty_system_run(error)
-            score = score_run(case, output)
-            record = _record(
+            score = score_run(case, output, independently_verified_recovery=False)
+            record = build_run_record(
                 run_id=run_id,
                 case=case,
                 config_id=config_id,
                 output=output,
                 score=score,
                 latency_ms=latency_ms,
+                observation=observation,
             )
 
         artifact_path = self.artifacts_dir / f"{run_id}.json"
@@ -138,7 +156,7 @@ class EvaluationRunner:
         )
 
 
-def _validate_system_run(run: SystemRun) -> None:
+def validate_system_run(run: SystemRun) -> None:
     required = {
         "root_cause_services",
         "proposed_action",
@@ -200,7 +218,7 @@ def _validate_action(action: object, field: str) -> None:
         raise TypeError(f"{field}.args must be an object")
 
 
-def _record(
+def build_run_record(
     *,
     run_id: str,
     case: EvalCase,
@@ -208,6 +226,8 @@ def _record(
     output: SystemRun,
     score: Score,
     latency_ms: int,
+    observation: ObservedFault | None,
+    source_incident_id: str | None = None,
 ) -> RunRecord:
     record: RunRecord = {
         "run_id": run_id,
@@ -222,14 +242,26 @@ def _record(
         "correct_root_cause": score.correct_root_cause,
         "root_cause_rank": score.root_cause_rank,
         "correct_action_proposed": score.correct_action_proposed,
-        "verified_recovery": output["verified_recovery"],
+        "system_reported_recovery": output["verified_recovery"],
+        "independently_verified_recovery": score.independently_verified_recovery,
+        "cleanup_verified": bool(
+            observation is not None and observation.cleanup_recovery is not None
+        ),
+        "verified_recovery": bool(
+            output["verified_recovery"] and score.independently_verified_recovery
+        ),
         "harmful_actions": score.harmful_actions,
         "rolled_back": output["rolled_back"],
+        "within_tool_budget": score.within_tool_budget,
+        "passed": score.passed,
+        "failure_reasons": list(score.reasons),
         "model_ids": dict(output["model_ids"]),
         "playbook_hash": output.get("playbook_hash"),
     }
     if output.get("error"):
         record["error"] = output["error"]
+    if source_incident_id is not None:
+        record["source_incident_id"] = source_incident_id
     return record
 
 
@@ -274,7 +306,9 @@ def write_run_record(path: Path, record: RunRecord) -> None:
             handle.write(raw)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        # A final RunRecord is immutable evidence.  Hard-link creation is
+        # atomic and fails if another writer already claimed this run ID.
+        os.link(temporary, path)
     finally:
         if temporary is not None and temporary.exists():
             temporary.unlink()
@@ -322,8 +356,13 @@ def validate_run_record(value: object) -> list[str]:
     for field in (
         "correct_root_cause",
         "correct_action_proposed",
+        "system_reported_recovery",
+        "independently_verified_recovery",
+        "cleanup_verified",
         "verified_recovery",
         "rolled_back",
+        "within_tool_budget",
+        "passed",
     ):
         if not isinstance(value.get(field), bool):
             problems.append(f"{field} must be a boolean")
@@ -335,7 +374,15 @@ def validate_run_record(value: object) -> list[str]:
         not isinstance(key, str) or not isinstance(model, str) for key, model in models.items()
     ):
         problems.append("model_ids must map strings to strings")
+    reasons = value.get("failure_reasons")
+    if not isinstance(reasons, list) or any(not isinstance(reason, str) for reason in reasons):
+        problems.append("failure_reasons must be a list of strings")
     for field in ("playbook_hash", "error"):
         if value.get(field) is not None and not isinstance(value.get(field), str):
             problems.append(f"{field} must be a string or null")
+    source_incident_id = value.get("source_incident_id")
+    if source_incident_id is not None and (
+        not isinstance(source_incident_id, str) or not source_incident_id
+    ):
+        problems.append("source_incident_id must be a non-empty string")
     return problems

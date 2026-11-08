@@ -3,37 +3,187 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="description" content="On-Call Copilot operator lab for arming faults and paging the agent" />
-    <title>On-Call Copilot · Lab</title>
+    <meta name="description" content="On-Call Copilot control center for faults, incidents, and evaluations" />
+    <title>On-Call Copilot · Control Center</title>
+    <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/assets/app.css" />
   </head>
   <body>
     <header class="topbar">
-      <a class="brand" href="/" aria-label="On-Call Copilot lab">
+      <a class="product-brand" href="/" aria-label="On-Call Copilot control center">
         <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
-        <span><strong>On-Call</strong> Lab</span>
+        <span class="brand-copy"><strong>On-Call Copilot</strong><small>Control Center</small></span>
       </a>
-      <a class="console-link" id="console-link" href="http://127.0.0.1:8000/">Incident console</a>
+      <nav class="product-nav" aria-label="On-Call Copilot applications">
+        <a class="active" aria-current="page" href="/">Control center</a>
+        <a id="console-link" href="http://127.0.0.1:8000/">Incidents</a>
+        <a id="evaluation-link" href="http://127.0.0.1:8030/">Evaluations</a>
+      </nav>
+      <div class="topbar-context"><span class="surface-mode warning">LIVE LAB</span></div>
     </header>
     <main>
-      <p class="intro">
-        Arm a fault in the shop, or page the agent with the symptom only. The
-        incident console does not show the root cause. Topology is
-        <code>c1_single</code>. Other topologies are not available.
-      </p>
+      <section class="hero">
+        <div>
+          <span class="eyebrow">Operator workspace</span>
+          <h1>Control center</h1>
+          <p>Generate a controlled fault, page the agent, watch the investigation, then inspect the evaluation report.</p>
+        </div>
+        <span class="topology">C1 single-agent lab</span>
+      </section>
+
+      <section class="workflow" aria-label="Operator workflow">
+        <a href="#fault-catalog"><span>1</span><strong>Generate</strong><small>Arm a catalog fault</small></a>
+        <a id="workflow-console-link" href="http://127.0.0.1:8000/"><span>2</span><strong>Investigate</strong><small>Watch live agent state</small></a>
+        <a id="workflow-evaluation-link" href="http://127.0.0.1:8030/"><span>3</span><strong>Evaluate</strong><small>Review scores and reports</small></a>
+      </section>
+
       <p class="intro caution">
-        Arm and disarm edit the live flag file. Disarm before you commit. A
-        flag left on breaks the shop for the next person who pulls. The
-        feature-flag page keeps the copy it loaded at startup, and saving
-        there can put the old value back.
+        This page changes the live lab. Disarm every fault when finished; an armed
+        flag affects the shop and the next evaluation run.
       </p>
-      <form class="budget" id="budget-form">
-        <label for="tool-budget">Tool budget</label>
-        <input id="tool-budget" name="tool-budget" type="number" min="1" max="100" value="10" />
-        <span>Applies to the next page. The agent stops after this many tool calls.</span>
-      </form>
-      <p class="status" id="status" role="status"></p>
-      <div id="faults"></div>
+
+      <section class="evaluation-runner" id="evaluation-runner" aria-labelledby="evaluation-runner-title">
+        <header class="runner-heading">
+          <div>
+            <span class="eyebrow">Automated evaluation</span>
+            <h2 id="evaluation-runner-title">Evaluation runner</h2>
+          </div>
+          <span class="runner-state" id="runner-state">Connecting</span>
+        </header>
+        <div class="runner-layout">
+          <div class="runner-controls">
+            <dl class="runner-configuration">
+              <div><dt>Configuration</dt><dd>C1 single agent</dd></div>
+              <div><dt>Cases</dt><dd>All development cases</dd></div>
+              <div><dt>Approval</dt><dd>Exact expected action only</dd></div>
+            </dl>
+            <p class="runner-copy">
+              Readiness checks the API, telemetry, lock, and clean fault baseline without
+              changing the shop.
+            </p>
+            <button class="runner-preflight" id="run-preflight" type="button">Run readiness check</button>
+            <div class="runner-acknowledgement">
+              <label class="ack-check">
+                <input id="ack-check" type="checkbox" />
+                <span>I understand this injects and cleans up a live lab fault.</span>
+              </label>
+              <label for="ack-phrase">Type <code id="required-ack">INJECT LIVE FAULTS</code></label>
+              <input
+                id="ack-phrase"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="INJECT LIVE FAULTS"
+              />
+              <button class="primary" id="run-deterministic" type="button" disabled>
+                Run deterministic evaluation
+              </button>
+            </div>
+            <p class="runner-warning hidden" id="runner-warning"></p>
+          </div>
+          <div class="runner-progress">
+            <div class="runner-progress-heading">
+              <div><span class="eyebrow">Live job state</span><h3>Progress</h3></div>
+              <span class="runner-stream" id="runner-stream"><i></i> SSE idle</span>
+            </div>
+            <p class="runner-message" id="runner-message" role="status" aria-live="polite">
+              Checking evaluation capabilities…
+            </p>
+            <ol class="runner-events" id="runner-events"></ol>
+            <a class="report-link hidden" id="runner-report" href="http://127.0.0.1:8030/">
+              Open evaluation report →
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <section class="batch-evaluation" aria-labelledby="batch-evaluation-title">
+        <header class="runner-heading">
+          <div>
+            <span class="eyebrow">Saved incident coverage</span>
+            <h2 id="batch-evaluation-title">Evaluate all incidents</h2>
+          </div>
+          <span class="runner-state" id="batch-state">Connecting</span>
+        </header>
+        <div class="batch-layout">
+          <div class="batch-controls">
+            <p>
+              One job fills every missing deterministic score and LLM rubric. Completed incidents
+              are skipped by default, and unmatched incidents are reported without guessing a case.
+            </p>
+            <dl class="batch-counts">
+              <div><dt>Eligible</dt><dd id="batch-eligible">—</dd></div>
+              <div><dt>Pending</dt><dd id="batch-pending">—</dd></div>
+              <div><dt>Complete</dt><dd id="batch-complete">—</dd></div>
+            </dl>
+            <label class="batch-recheck">
+              <input id="batch-re-evaluate" type="checkbox" />
+              <span>
+                Re-evaluate incidents that already have both scores
+                <small>Creates new immutable artifacts and makes additional model calls.</small>
+              </span>
+            </label>
+            <button class="primary" id="run-batch-evaluation" type="button" disabled>
+              Evaluate all pending incidents
+            </button>
+          </div>
+          <div class="runner-progress">
+            <div class="runner-progress-heading">
+              <div><span class="eyebrow">Batch job state</span><h3>Progress</h3></div>
+              <span class="runner-stream" id="batch-stream"><i></i> SSE idle</span>
+            </div>
+            <p class="runner-message" id="batch-message" role="status" aria-live="polite">
+              Checking judge configuration…
+            </p>
+            <ol class="runner-events" id="batch-events"></ol>
+            <a class="report-link hidden" id="batch-report" href="http://127.0.0.1:8030/">
+              Open evaluation reports →
+            </a>
+          </div>
+        </div>
+      </section>
+
+      <section class="retrospective" aria-labelledby="retrospective-title">
+        <div>
+          <span class="eyebrow">Saved evidence</span>
+          <h2 id="retrospective-title">Evaluate a persisted incident</h2>
+          <p>
+            Re-score a completed incident against a development case without changing the shop.
+            Historical telemetry is not treated as an independent recovery witness.
+          </p>
+        </div>
+        <form id="retrospective-form">
+          <label for="saved-incident">Incident</label>
+          <select id="saved-incident" required><option value="">Loading incidents…</option></select>
+          <label for="saved-case">Evaluation case</label>
+          <select id="saved-case" required><option value="">Loading cases…</option></select>
+          <button id="run-retrospective" type="submit">Evaluate saved incident</button>
+        </form>
+        <p class="retrospective-status" id="retrospective-status" role="status" aria-live="polite"></p>
+        <a class="report-link hidden" id="retrospective-report" href="http://127.0.0.1:8030/">
+          Open retrospective report →
+        </a>
+      </section>
+
+      <section id="fault-catalog" class="catalog-heading">
+        <div><span class="eyebrow">Controlled mutations</span><h2>Fault catalog</h2></div>
+        <form class="budget" id="budget-form">
+          <label for="tool-budget">Tool budget</label>
+          <input id="tool-budget" name="tool-budget" type="number" min="1" max="100" value="10" />
+        </form>
+      </section>
+      <p class="status" id="status" role="status" aria-live="polite"></p>
+      <div class="fault-grid" id="faults"></div>
+
+      <section class="catalog-heading" id="service-health">
+        <div>
+          <span class="eyebrow">Stack</span>
+          <h2>Services</h2>
+        </div>
+        <button id="refresh-health" type="button">Refresh</button>
+      </section>
+      <p class="status" id="health-summary" role="status" aria-live="polite"></p>
+      <div class="service-groups" id="services"></div>
     </main>
     <script src="/assets/app.js"></script>
   </body>

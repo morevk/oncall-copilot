@@ -59,11 +59,12 @@ ALLOWED_IMPORTS: dict[str, set[str]] = {
     "oncall_service": {"oncall_contracts", "oncall_graph", "oncall_memory"},
     "oncall_eval": {"oncall_contracts"},
     # The lab holds the fault manifest's root cause. NOTHING MAY IMPORT THE LAB
-    # -- that is the rule, and it is unchanged. The lab importing contracts is
-    # the other direction: it reads the shared flagd writer from
-    # oncall_contracts.flagd, which ops_actions also uses with the opposite
-    # intent. contracts imports nothing, so there is no cycle.
-    "oncall_lab": {"oncall_contracts"},
+    # -- that is the rule, and it is unchanged. The lab may import contracts
+    # for the shared flagd writer, and it may import oncall_eval so the
+    # Control Center can start a typed evaluation. That does not let the
+    # agent import either package. Eval does not import the lab, so there
+    # is no cycle.
+    "oncall_lab": {"oncall_contracts", "oncall_eval"},
 }
 
 
@@ -174,12 +175,15 @@ def test_package_is_registered_in_the_workspace(pkg: str) -> None:
 
 
 def test_nothing_imports_oncall_eval() -> None:
-    """If the agent can import the harness it can reach the fault manifest,
-    which holds the correct answer for every case."""
+    """The agent must not import the harness. The lab may: it is the operator
+    process that already arms faults, and it calls the typed execution API.
+    The graph, the incident service, and the tools must not."""
+    allowed_packages = {EVAL_PKG, "oncall-lab"}
     offenders = [
         str(p.relative_to(ROOT))
-        for p in python_files(exclude_package=EVAL_PKG)
-        if re.search(
+        for p in python_files()
+        if p.relative_to(PACKAGES).parts[0] not in allowed_packages
+        and re.search(
             r"^\s*(?:from|import)\s+oncall_eval\b", p.read_text(encoding="utf-8"), re.MULTILINE
         )
     ]

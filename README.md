@@ -169,11 +169,12 @@ talk to.
 | **Feature flags** (your fault switch) | http://localhost:8080/feature |
 | Prometheus | http://localhost:9090 |
 | Incident UI (ours) | http://localhost:8000/ |
-| Lab (ours) | http://localhost:8020/ |
+| **Control Center / fault lab (ours)** | http://localhost:8020/ |
+| Evaluation reports (ours) | http://localhost:8030/ |
 
 ### Your first five minutes with the stack
 
-Open the lab at http://localhost:8020/ and arm `payment-failure`, or use the feature-flag UI and switch `paymentFailure` **on**. Then watch Prometheus:
+Open the Control Center at http://localhost:8020/ and arm `payment-failure`, or use the feature-flag UI and switch `paymentFailure` **on**. Then watch Prometheus:
 
 ```promql
 sum(rate(http_server_request_duration_seconds_count{service_name="frontend",

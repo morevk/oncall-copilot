@@ -1274,14 +1274,18 @@ name = "oncall-eval"
 version = "0.1.0"
 source = { editable = "packages/oncall-eval" }
 dependencies = [
+    { name = "fastapi" },
     { name = "oncall-contracts" },
     { name = "pyyaml" },
+    { name = "uvicorn", extra = ["standard"] },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "fastapi", specifier = ">=0.115" },
     { name = "oncall-contracts", editable = "packages/oncall-contracts" },
     { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
 ]
 
 [[package]]
@@ -1340,6 +1344,7 @@ source = { editable = "packages/oncall-lab" }
 dependencies = [
     { name = "fastapi" },
     { name = "oncall-contracts" },
+    { name = "oncall-eval" },
     { name = "pyyaml" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -1348,6 +1353,7 @@ dependencies = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "oncall-contracts", editable = "packages/oncall-contracts" },
+    { name = "oncall-eval", editable = "packages/oncall-eval" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34" },
 ]

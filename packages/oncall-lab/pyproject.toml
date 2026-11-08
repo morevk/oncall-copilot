@@ -10,6 +10,10 @@ dependencies = [
     # `uv sync --package oncall-lab` stopped installing what main.py imports and
     # the container exited at startup. See the guard in tests/test_guards.py.
     "oncall-contracts",
+    # The Control Center starts evaluations by calling oncall-eval. The lab
+    # image installs only this member's dependencies, so the import has to be
+    # declared here or the container exits at startup.
+    "oncall-eval",
     "fastapi>=0.115",
     "pyyaml>=6.0.3",
     "uvicorn[standard]>=0.34",

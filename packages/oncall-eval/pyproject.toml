@@ -4,8 +4,10 @@ version = "0.1.0"
 description = "P4 — fault injector, evaluation harness, judge and red team."
 requires-python = ">=3.12"
 dependencies = [
+    "fastapi>=0.115",
     "oncall-contracts",
     "pyyaml>=6.0.3",
+    "uvicorn[standard]>=0.34",
 ]
 
 [build-system]

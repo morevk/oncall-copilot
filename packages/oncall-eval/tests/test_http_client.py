@@ -43,10 +43,17 @@ class FakeClock:
 
 
 def test_client_submits_alert_polls_approves_exact_hash_and_returns_evidence():
+    expected = {
+        "action": "set_flag",
+        "args": {"flag": "paymentFailure", "variant": "off"},
+    }
     responses = iter(
         [
             {"status": "RUNNING"},
-            {"status": "RUNNING", "approval": {"payload_hash": "abc123"}},
+            {
+                "status": "RUNNING",
+                "approval": {"payload_hash": "abc123", "command": expected},
+            },
             {"status": "RECOVERED", "system_run": _system_run()},
         ]
     )
@@ -69,6 +76,7 @@ def test_client_submits_alert_polls_approves_exact_hash_and_returns_evidence():
         incident_id="eval/run 1",
         config_id="c1_single",
         tool_budget=5,
+        expected_action=expected,  # type: ignore[arg-type]
     )
 
     assert result == _system_run()
@@ -92,19 +100,33 @@ def test_client_submits_alert_polls_approves_exact_hash_and_returns_evidence():
     )
 
 
-def test_client_rejects_repeated_approval_hash():
-    responses = iter(
-        [
-            {"approval": {"payload_hash": "same"}},
-            {"approval": {"payload_hash": "same"}},
-        ]
-    )
+def test_client_never_resubmits_a_decision_for_the_same_approval_hash():
+    requests = []
+
+    def transport(method: str, url: str, body, timeout: float):
+        requests.append((method, url, body, timeout))
+        return {"approval": {"payload_hash": "same"}}
+
+    clock = FakeClock()
     client = IncidentApiClient(
-        transport=lambda *_: next(responses),
+        run_timeout_seconds=2,
+        poll_interval_seconds=1,
+        transport=transport,
+        clock=clock,
+        sleep=clock.sleep,
     )
 
-    with pytest.raises(IncidentApiError, match="already-approved"):
-        client.run(_alert(), incident_id="run", config_id="c1_single", tool_budget=5)  # type: ignore[arg-type]
+    with pytest.raises(IncidentApiError, match="did not clear"):
+        client.run(
+            _alert(),
+            incident_id="run",
+            config_id="c1_single",
+            tool_budget=5,
+            expected_action=None,
+        )  # type: ignore[arg-type]
+
+    decision_requests = [request for request in requests if request[0] == "POST"]
+    assert len(decision_requests) == 2  # alert submission plus one rejection
 
 
 def test_client_times_out_nonterminal_incident():
@@ -118,11 +140,94 @@ def test_client_times_out_nonterminal_incident():
     )
 
     with pytest.raises(IncidentApiError, match="did not terminate"):
-        client.run(_alert(), incident_id="run", config_id="c1_single", tool_budget=5)  # type: ignore[arg-type]
+        client.run(
+            _alert(),
+            incident_id="run",
+            config_id="c1_single",
+            tool_budget=5,
+            expected_action=None,
+        )  # type: ignore[arg-type]
 
 
 def test_client_requires_terminal_system_evidence():
     client = IncidentApiClient(transport=lambda *_: {"status": "RECOVERED"})
 
     with pytest.raises(IncidentApiError, match="no system_run"):
-        client.run(_alert(), incident_id="run", config_id="c1_single", tool_budget=5)  # type: ignore[arg-type]
+        client.run(
+            _alert(),
+            incident_id="run",
+            config_id="c1_single",
+            tool_budget=5,
+            expected_action=None,
+        )  # type: ignore[arg-type]
+
+
+def test_client_rejects_a_proposal_that_does_not_exactly_match_expected_action():
+    wrong = {"action": "set_flag", "args": {"flag": "adFailure", "variant": "off"}}
+    terminal = _system_run() | {
+        "proposed_action": wrong,
+        "executed_actions": [],
+        "verified_recovery": False,
+    }
+    responses = iter(
+        [
+            {"approval": {"payload_hash": "wrong-hash", "command": wrong}},
+            {"status": "REJECTED", "system_run": terminal},
+        ]
+    )
+    requests = []
+
+    def transport(method: str, url: str, body, timeout: float):
+        requests.append((method, url, body, timeout))
+        return next(responses)
+
+    client = IncidentApiClient(transport=transport)
+    expected = {
+        "action": "set_flag",
+        "args": {"flag": "paymentFailure", "variant": "off"},
+    }
+
+    result = client.run(
+        _alert(),
+        incident_id="safe-reject",
+        config_id="c1_single",
+        tool_budget=5,
+        expected_action=expected,  # type: ignore[arg-type]
+    )
+
+    assert result["executed_actions"] == []
+    assert requests[1][2] == {"decision": "reject", "payload_hash": None}
+
+
+def test_client_preflight_requires_healthy_incident_api():
+    def healthy_transport(_method, url, _body, _timeout):
+        if url.endswith("/healthz"):
+            return {"status": "ok"}
+        return {
+            "configurations": ["c1_single"],
+            "approval": "exact-action-payload-hash",
+            "system_run_contract": "v1",
+        }
+
+    healthy = IncidentApiClient(transport=healthy_transport)
+    unhealthy = IncidentApiClient(transport=lambda *_: {"status": "starting"})
+
+    healthy.preflight("c1_single")
+    with pytest.raises(IncidentApiError, match="health check"):
+        unhealthy.preflight("c1_single")
+
+
+def test_client_preflight_refuses_a_topology_the_service_does_not_advertise():
+    def transport(_method, url, _body, _timeout):
+        if url.endswith("/healthz"):
+            return {"status": "ok"}
+        return {
+            "configurations": ["c1_single"],
+            "approval": "exact-action-payload-hash",
+            "system_run_contract": "v1",
+        }
+
+    client = IncidentApiClient(transport=transport)
+
+    with pytest.raises(IncidentApiError, match="c2_team"):
+        client.preflight("c2_team")

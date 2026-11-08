@@ -1,4 +1,6 @@
+import sqlite3
 import time
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 from oncall_service.main import create_app
@@ -19,10 +21,16 @@ def _wait_for_status(client: TestClient, incident_id: str, expected: str) -> dic
 def test_health_and_console_are_served():
     with TestClient(create_app(demo_delay=0)) as client:
         health = client.get("/healthz")
+        capabilities = client.get("/api/evaluation-capabilities")
         page = client.get("/")
 
     assert health.status_code == 200
     assert health.json() == {"status": "ok"}
+    assert capabilities.json() == {
+        "configurations": ["c1_single"],
+        "approval": "exact-action-payload-hash",
+        "system_run_contract": "v1",
+    }
     assert page.status_code == 200
     assert "Incident Console" in page.text
     assert "No incident selected" in page.text
@@ -99,6 +107,58 @@ def test_incident_feed_records_creation_and_state_updates():
     assert feed_events[0]["incident"]["incident_id"] == incident_id
     assert feed_events[-1]["type"] == "approval.requested"
     assert feed_events[-1]["incident"]["status"] == waiting["status"]
+
+
+def test_completed_incident_and_event_feed_survive_a_restart(tmp_path: Path):
+    database = tmp_path / "incidents.sqlite3"
+    with TestClient(create_app(demo_delay=0, database_path=database)) as client:
+        incident_id = client.post("/api/demo").json()["incident_id"]
+        waiting = _wait_for_status(client, incident_id, "AWAITING_APPROVAL")
+        client.post(
+            f"/incidents/{incident_id}/approve",
+            json={
+                "decision": "approve",
+                "payload_hash": waiting["approval"]["payload_hash"],
+            },
+        )
+        recovered = _wait_for_status(client, incident_id, "RECOVERED")
+
+    restarted = create_app(demo_delay=0, database_path=database)
+    with TestClient(restarted) as client:
+        restored = client.get(f"/incidents/{incident_id}")
+        listed = client.get("/api/incidents")
+
+    assert database.is_file()
+    assert restored.status_code == 200
+    assert restored.json() == recovered
+    assert listed.json() == [recovered]
+    assert restarted.state.incidents.feed_events[-1]["incident"] == recovered
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("SELECT count(*) FROM incidents").fetchone()[0] == 1
+        assert (
+            connection.execute("SELECT count(*) FROM incident_events").fetchone()[0]
+            == recovered["event_count"]
+        )
+        assert (
+            connection.execute("SELECT count(*) FROM feed_events").fetchone()[0]
+            == recovered["event_count"]
+        )
+
+
+def test_unfinished_incident_fails_closed_after_a_restart(tmp_path: Path):
+    database = tmp_path / "incidents.sqlite3"
+    with TestClient(create_app(demo_delay=0, database_path=database)) as client:
+        incident_id = client.post("/api/demo").json()["incident_id"]
+        _wait_for_status(client, incident_id, "AWAITING_APPROVAL")
+
+    with TestClient(create_app(demo_delay=0, database_path=database)) as client:
+        restored = client.get(f"/incidents/{incident_id}").json()
+
+    assert restored["status"] == "ESCALATED"
+    assert restored["terminal"] is True
+    assert restored["approval"] is None
+    assert restored["events"][-1]["type"] == "incident.interrupted"
+    assert "not resumed" in restored["error"]
 
 
 def test_configured_frontend_origin_can_post_alerts():

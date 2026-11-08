@@ -11,6 +11,7 @@ from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from oncall_contracts.config import Topology
+from oncall_contracts.faults import FaultAction
 from oncall_contracts.state import Alert
 
 from .scoring import SystemRun
@@ -78,6 +79,22 @@ class IncidentApiClient:
         self.clock = clock
         self.sleep = sleep
 
+    def preflight(self, config_id: Topology) -> None:
+        """Fail before injection when the API cannot evaluate this topology."""
+        payload = self._request("GET", "/healthz", None)
+        if payload.get("status") != "ok":
+            raise IncidentApiError("incident API health check did not return status 'ok'")
+        capabilities = self._request("GET", "/api/evaluation-capabilities", None)
+        configurations = capabilities.get("configurations")
+        if not isinstance(configurations, list) or config_id not in configurations:
+            raise IncidentApiError(
+                f"incident API does not advertise evaluation support for {config_id!r}"
+            )
+        if capabilities.get("approval") != "exact-action-payload-hash":
+            raise IncidentApiError("incident API does not advertise the exact-action approval gate")
+        if capabilities.get("system_run_contract") != "v1":
+            raise IncidentApiError("incident API does not advertise SystemRun contract v1")
+
     def run(
         self,
         alert: Alert,
@@ -85,6 +102,7 @@ class IncidentApiClient:
         incident_id: str,
         config_id: Topology,
         tool_budget: int,
+        expected_action: FaultAction | None,
     ) -> SystemRun:
         query = urlencode(
             {
@@ -95,7 +113,7 @@ class IncidentApiClient:
         )
         payload = self._request("POST", f"/alerts?{query}", alert)
         deadline = self.clock() + self.run_timeout_seconds
-        approved_hashes: set[str] = set()
+        decided_hashes: set[str] = set()
         incident_path = f"/incidents/{quote(incident_id, safe='')}"
 
         while True:
@@ -108,13 +126,29 @@ class IncidentApiClient:
                     raise IncidentApiError("approval has no payload_hash")
                 if not self.auto_approve:
                     raise IncidentApiError("run requires approval but auto_approve is disabled")
-                if payload_hash in approved_hashes:
-                    raise IncidentApiError("incident repeated an already-approved payload hash")
-                approved_hashes.add(payload_hash)
+                if payload_hash in decided_hashes:
+                    now = self.clock()
+                    if now >= deadline:
+                        raise IncidentApiError(
+                            f"incident {incident_id!r} did not clear its decided approval "
+                            f"within {self.run_timeout_seconds}s"
+                        )
+                    self.sleep(min(self.poll_interval_seconds, deadline - now))
+                    payload = self._request("GET", incident_path, None)
+                    continue
+                decided_hashes.add(payload_hash)
+                decision = (
+                    "approve"
+                    if _same_action(approval.get("command"), expected_action)
+                    else "reject"
+                )
                 payload = self._request(
                     "POST",
                     f"{incident_path}/approve",
-                    {"decision": "approve", "payload_hash": payload_hash},
+                    {
+                        "decision": decision,
+                        "payload_hash": payload_hash if decision == "approve" else None,
+                    },
                 )
                 continue
 
@@ -145,3 +179,12 @@ class IncidentApiClient:
         if not isinstance(payload, Mapping):
             raise IncidentApiError("incident API response must be a JSON object")
         return payload
+
+
+def _same_action(actual: object, expected: FaultAction | None) -> bool:
+    """Match a command containing exactly the expected action and arguments."""
+    if expected is None or not isinstance(actual, Mapping):
+        return False
+    if set(actual) != {"action", "args"}:
+        return False
+    return actual.get("action") == expected["action"] and actual.get("args") == expected["args"]

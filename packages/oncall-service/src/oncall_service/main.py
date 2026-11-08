@@ -1,9 +1,4 @@
-"""Incident API, SSE event stream, and browser operations console.
-
-The process is intentionally single-worker and in-memory for the first vertical
-slice: a ``Solo`` instance and its LangGraph checkpointer must remain together
-while an approval is pending. Durable storage is the next service milestone.
-"""
+"""Incident API, durable event history, SSE stream, and operations console."""
 
 from __future__ import annotations
 
@@ -29,6 +24,7 @@ from oncall_graph.topologies.c1_single import Solo, interrupt_value
 from pydantic import BaseModel
 
 from .alerts import AlertPayloadError, firing_alerts, is_notification_group
+from .database import IncidentDatabase
 
 STATIC = Path(__file__).with_name("static")
 TERMINAL = frozenset({"RECOVERED", "REJECTED", "ESCALATED", "APPROVAL_MISMATCH"})
@@ -90,7 +86,7 @@ class Incident:
 
 
 class IncidentStore:
-    def __init__(self, demo_delay: float = 0.65):
+    def __init__(self, demo_delay: float = 0.65, database_path: Path | None = None):
         self.incidents: dict[str, Incident] = {}
         self.demo_delay = demo_delay
         self.feed_events: list[dict[str, Any]] = []
@@ -99,6 +95,40 @@ class IncidentStore:
         # the same firing group on every evaluation; a terminal incident does
         # not block the next occurrence.
         self.alert_keys: dict[str, str] = {}
+        self.database = IncidentDatabase(database_path) if database_path is not None else None
+        if self.database is not None:
+            self._restore()
+
+    def _restore(self) -> None:
+        assert self.database is not None
+        snapshots, self.feed_events, self.alert_keys = self.database.load()
+        for snapshot in snapshots:
+            incident = Incident(
+                incident_id=snapshot["incident_id"],
+                mode=snapshot["mode"],
+                alert=snapshot["alert"],
+                config_id=snapshot["config_id"],
+                tool_budget=snapshot["tool_budget"],
+                status=snapshot["status"],
+                created_at=snapshot["created_at"],
+                updated_at=snapshot["updated_at"],
+                stage=snapshot["stage"],
+                state=snapshot["state"],
+                approval=snapshot["approval"],
+                system_run=snapshot["system_run"],
+                error=snapshot["error"],
+                events=snapshot["events"],
+            )
+            self.incidents[incident.incident_id] = incident
+        for incident in self.incidents.values():
+            if incident.status not in TERMINAL:
+                self._interrupt(incident)
+
+    def _interrupt(self, incident: Incident) -> None:
+        incident.status = "ESCALATED"
+        incident.approval = None
+        incident.error = "incident interrupted by service restart; agent execution was not resumed"
+        self._append_event(incident, "incident.interrupted", incident.error)
 
     def reserve_alert(self, key: str, incident_id: str) -> Incident | None:
         """Claim this firing alert, or return the investigation already open for it."""
@@ -108,6 +138,8 @@ class IncidentStore:
             if incident is not None and incident.status not in TERMINAL:
                 return incident
         self.alert_keys[key] = incident_id
+        if self.database is not None:
+            self.database.reserve_alert(key, incident_id)
         return None
 
     def get(self, incident_id: str) -> Incident:
@@ -146,6 +178,13 @@ class IncidentStore:
         return incident
 
     async def emit(self, incident: Incident, kind: str, message: str) -> None:
+        self._append_event(incident, kind, message)
+        async with incident.condition:
+            incident.condition.notify_all()
+        async with self.feed_condition:
+            self.feed_condition.notify_all()
+
+    def _append_event(self, incident: Incident, kind: str, message: str) -> None:
         incident.updated_at = _now()
         event = {
             "id": len(incident.events) + 1,
@@ -154,8 +193,6 @@ class IncidentStore:
             "message": message,
         }
         incident.events.append(event)
-        async with incident.condition:
-            incident.condition.notify_all()
         feed_event = {
             "id": len(self.feed_events) + 1,
             "type": kind,
@@ -163,8 +200,8 @@ class IncidentStore:
             "incident": incident.snapshot(),
         }
         self.feed_events.append(feed_event)
-        async with self.feed_condition:
-            self.feed_condition.notify_all()
+        if self.database is not None:
+            self.database.save_event(incident.snapshot(), event, feed_event)
 
 
 def _validate_alert(value: Any) -> Alert:
@@ -455,6 +492,7 @@ def create_app(
     *,
     demo_delay: float = 0.65,
     cors_origins: Sequence[str] | None = None,
+    database_path: Path | None = None,
 ) -> FastAPI:
     app = FastAPI(title="On-Call Copilot", version="0.1.0")
     if cors_origins is None:
@@ -470,7 +508,10 @@ def create_app(
             allow_methods=["GET", "POST", "OPTIONS"],
             allow_headers=["Content-Type", "Last-Event-ID"],
         )
-    store = IncidentStore(demo_delay=demo_delay)
+    configured_database = database_path
+    if configured_database is None and (value := os.environ.get("ONCALL_INCIDENT_DATABASE")):
+        configured_database = Path(value)
+    store = IncidentStore(demo_delay=demo_delay, database_path=configured_database)
     app.state.incidents = store
     app.mount("/assets", StaticFiles(directory=STATIC), name="assets")
 
@@ -481,6 +522,15 @@ def create_app(
     @app.get("/healthz")
     async def healthz() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/api/evaluation-capabilities")
+    async def evaluation_capabilities() -> dict[str, Any]:
+        """Public contract checked by the evaluator before it mutates the lab."""
+        return {
+            "configurations": ["c1_single"],
+            "approval": "exact-action-payload-hash",
+            "system_run_contract": "v1",
+        }
 
     @app.get("/api/incidents")
     async def list_incidents() -> list[dict[str, Any]]:

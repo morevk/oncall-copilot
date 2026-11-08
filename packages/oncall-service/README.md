@@ -9,9 +9,10 @@ To start the complete application from the repository root:
 make up
 ```
 
-This builds the incident and lab images, starts the Astronomy Shop and telemetry
+This builds the incident, Control Center, and evaluation dashboard images, starts the Astronomy Shop and telemetry
 backends, waits for them to become healthy, checks the health endpoints, and
-prints the URLs. The incident API/UI is on port 8000. The lab is on port 8020.
+prints the URLs. The incident API/UI is on port 8000, the Control Center is on
+port 8020, and evaluation reports are on port 8030.
 `make stop` pauses the
 containers, and the next `make up` starts them again. `make down` removes the
 containers and keeps volumes. `make reset` also wipes Prometheus and OpenSearch
@@ -27,9 +28,11 @@ that is still open does not start a second agent. The guided demo and the
 evaluation harness are separate: the demo never calls the model, and the
 harness posts one alert itself so a scored run does not wait five minutes.
 
-Fault controls are not on this console. The lab at <http://127.0.0.1:8020/>
-arms a fault from the manifest, or pages this API with the checkout symptom.
-The root cause stays on the lab page.
+Fault controls are not on this console. The Control Center at
+<http://127.0.0.1:8020/> arms a fault from the manifest or pages this API with
+the checkout symptom. The root cause stays on that page. Shared navigation
+connects it to this console and the read-only evaluation reports at
+<http://127.0.0.1:8030/>.
 
 Open <http://127.0.0.1:8000>. **Run guided demo** uses no model and no live
 infrastructure. **Start live investigation** runs the current C1 solo agent:
@@ -51,6 +54,12 @@ export ONCALL_CORS_ORIGINS=http://localhost:5173
 Multiple origins can be comma-separated. There is intentionally no wildcard
 default because this API can start an agent and expose incident data.
 
+The evaluation harness calls `GET /api/evaluation-capabilities` before fault
+injection. The response currently advertises only `c1_single`, the exact-action
+payload-hash approval gate, and SystemRun contract v1. A topology must not be
+added to that response until it works through the complete HTTP start,
+approval/resume, terminal-result path.
+
 For example:
 
 ```bash
@@ -68,5 +77,11 @@ curl -X POST 'http://127.0.0.1:8000/alerts?incident_id=checkout-001' \
   }'
 ```
 
-This milestone stores incidents in memory and must run with one process. A
-restart clears the queue and any pending approval.
+When `ONCALL_INCIDENT_DATABASE` is set, incident snapshots, ordered incident
+events, the global SSE feed, and alert deduplication keys are persisted in
+SQLite. The Compose stack stores this at `artifacts/incidents.sqlite3`.
+
+Agent execution still runs in one process. If the service restarts during an
+active investigation or pending approval, the incident is restored as
+`ESCALATED` with an `incident.interrupted` event; execution is never silently
+resumed without its in-memory graph state.

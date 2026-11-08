@@ -1,5 +1,5 @@
 # Delegates container lifecycle to deploy/; keeps Python tooling here.
-.PHONY: help bootstrap up stop down reset config preflight verify urls reload-rules test lint fix guards eval-fixture images ui
+.PHONY: help bootstrap up stop down reset config preflight verify urls reload-rules test lint fix guards eval-fixture eval-preflight eval-live-dev eval-judge eval-dashboard images ui
 
 help:
 	@$(MAKE) -C deploy help
@@ -8,6 +8,10 @@ help:
 	@echo "fix        apply the fixes lint reports, then re-run lint"
 	@echo "guards     just the structural guards"
 	@echo "eval-fixture  replay development fixtures; no model calls or fault injection"
+	@echo "eval-preflight  verify C1 live dependencies without changing the lab"
+	@echo "eval-live-dev  run the development fault evaluation (requires ACK_LIVE_FAULTS=yes)"
+	@echo "eval-judge RUN_ID=<id>  rubric-score one saved run (requires configured judge)"
+	@echo "eval-dashboard  serve completed evaluation artifacts at 127.0.0.1:8030"
 	@echo "images     build every shipped image, then start the ones that need no mounts"
 	@echo "ui         run only the incident API/UI on the host for debugging"
 
@@ -43,6 +47,20 @@ guards:
 # Fixture replay only. The name eval-gate stays unused until a check grades a live run.
 eval-fixture:
 	uv run python -m oncall_eval.harness --mock --cases eval/dev --fixtures eval/fixtures --group-by complexity --fail-under 1.0
+
+eval-preflight:
+	uv run --env-file .env python -m oncall_eval.harness --preflight --cases eval/dev --config c1_single --fail-under 1.0
+
+eval-live-dev:
+	@test "$(ACK_LIVE_FAULTS)" = "yes" || (echo "Refusing to mutate the lab. Re-run with ACK_LIVE_FAULTS=yes"; exit 2)
+	uv run --env-file .env python -m oncall_eval.harness --live --yes-inject-faults --cases eval/dev --config c1_single --group-by complexity --fail-under 1.0
+
+eval-judge:
+	@test -n "$(RUN_ID)" || (echo "RUN_ID is required. Example: make eval-judge RUN_ID=<id>"; exit 2)
+	uv run --env-file .env python -m oncall_eval.judge --run-id "$(RUN_ID)"
+
+eval-dashboard:
+	uv run python -m oncall_eval.dashboard
 
 # Catches what no other target can: an image that does not build, and a
 # container that binds its port without working. Needs Docker, so it is not in

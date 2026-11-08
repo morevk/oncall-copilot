@@ -39,9 +39,15 @@ def test_record_carries_the_outcome_measures():
         "correct_root_cause",
         "root_cause_rank",
         "correct_action_proposed",
+        "system_reported_recovery",
+        "independently_verified_recovery",
+        "cleanup_verified",
         "verified_recovery",
         "harmful_actions",
         "rolled_back",
+        "within_tool_budget",
+        "passed",
+        "failure_reasons",
     ):
         assert field in RunRecord.__annotations__, f"RunRecord missing {field!r}"
 

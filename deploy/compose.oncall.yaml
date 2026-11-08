@@ -22,6 +22,7 @@ services:
       ONCALL_SERVICE_HOST: 0.0.0.0
       ONCALL_SERVICE_PORT: "8000"
       ONCALL_CORS_ORIGINS: ${ONCALL_CORS_ORIGINS:-}
+      ONCALL_INCIDENT_DATABASE: /artifacts/incidents.sqlite3
       PROMETHEUS_URL: http://prometheus:9090
       JAEGER_URL: http://jaeger:16686/jaeger/ui
       OPENSEARCH_URL: http://opensearch:9200
@@ -31,6 +32,8 @@ services:
       - opensearch
     ports:
       - "8000:8000"
+    volumes:
+      - ${ONCALL_ROOT:?set ONCALL_ROOT to the repo root}/artifacts:/artifacts
     init: true
     restart: unless-stopped
     healthcheck:
@@ -52,17 +55,47 @@ services:
       context: ${ONCALL_ROOT:?set ONCALL_ROOT to the repo root}
       dockerfile: packages/oncall-lab/Dockerfile
     environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      JUDGE_MODEL: ${JUDGE_MODEL:-google/gemini-3.1-flash-lite}
       ONCALL_LAB_HOST: 0.0.0.0
       ONCALL_LAB_PORT: "8020"
       ONCALL_MANIFEST: /lab/manifest.yaml
       FLAGD_CONFIG: /etc/flagd/demo.flagd.json
       ONCALL_ALERTS_URL: http://oncall-service:8000/alerts
       ONCALL_CONSOLE_URL: http://localhost:8000/
+      ONCALL_EVALUATION_URL: http://localhost:8030/
+      # Probe addresses are inside the Compose network. The page still links
+      # to the host URLs from `make urls`. localhost here would be the lab
+      # container, so every console would look down.
+      ONCALL_PROBE_SHOP: http://frontend-proxy:8080/
+      ONCALL_PROBE_GRAFANA: http://grafana:3000/api/health
+      ONCALL_PROBE_JAEGER: http://jaeger:16686/jaeger/ui/
+      ONCALL_PROBE_FLAGS: http://flagd-ui:4000/
+      ONCALL_PROBE_PROMETHEUS: http://prometheus:9090/-/ready
+      ONCALL_PROBE_INCIDENTS: http://oncall-service:8000/healthz
+      ONCALL_PROBE_EVAL: http://oncall-eval-dashboard:8030/healthz
+      ONCALL_PROBE_MCP_TELEMETRY: http://mcp-telemetry:8101/mcp
+      ONCALL_PROBE_MCP_RUNBOOKS: http://mcp-runbooks:8102/mcp
+      ONCALL_PROBE_MCP_OPS: http://mcp-ops-actions:8104/mcp
+      # Evaluation paths are server-owned. The browser posts ids only.
+      # Only the development cases are mounted. The sealed suite stays on the host.
+      ONCALL_EVAL_CASES: /eval/dev
+      ONCALL_EVAL_ARTIFACTS: /artifacts
+      ONCALL_EVAL_JOBS_DATABASE: /artifacts/evaluation-jobs.sqlite3
+      ONCALL_EVAL_LOCK_FILE: /artifacts/locks/live-evaluation.lock
+      ONCALL_EVAL_RUBRIC: /eval/rubrics/investigation-v1.yaml
+      PROMETHEUS_URL: http://prometheus:9090
+      ONCALL_API_URL: http://oncall-service:8000
     volumes:
       - ${ONCALL_ROOT:?set ONCALL_ROOT to the repo root}/eval/faults/manifest.yaml:/lab/manifest.yaml:ro
+      - ${ONCALL_ROOT:?set ONCALL_ROOT to the repo root}/eval/dev:/eval/dev:ro
+      - ${ONCALL_ROOT:?set ONCALL_ROOT to the repo root}/eval/rubrics:/eval/rubrics:ro
       - ${ONCALL_ROOT:?set ONCALL_ROOT to the repo root}/deploy/flagd:/etc/flagd
+      - ${ONCALL_ROOT:?set ONCALL_ROOT to the repo root}/artifacts:/artifacts
     depends_on:
       oncall-service:
+        condition: service_healthy
+      oncall-eval-dashboard:
         condition: service_healthy
       flagd:
         condition: service_started
@@ -76,6 +109,33 @@ services:
         - python
         - -c
         - import urllib.request; urllib.request.urlopen('http://localhost:8020/healthz', timeout=2)
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
+  # Read-only report surface. Evaluation processes write immutable artifacts;
+  # this service only builds a disposable SQLite index and renders them.
+  oncall-eval-dashboard:
+    build:
+      context: ${ONCALL_ROOT:?set ONCALL_ROOT to the repo root}
+      dockerfile: packages/oncall-eval/Dockerfile
+    environment:
+      ONCALL_EVAL_DASHBOARD_HOST: 0.0.0.0
+      ONCALL_EVAL_DASHBOARD_PORT: "8030"
+      ONCALL_EVAL_ARTIFACTS: /artifacts
+    volumes:
+      - ${ONCALL_ROOT:?set ONCALL_ROOT to the repo root}/artifacts:/artifacts
+    ports:
+      - "8030:8030"
+    init: true
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://localhost:8030/healthz', timeout=2)
       interval: 5s
       timeout: 3s
       retries: 12

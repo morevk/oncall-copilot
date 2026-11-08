@@ -49,7 +49,7 @@ def _run(*, roots=None, action: FaultAction | None = None) -> SystemRun:
 
 
 def test_score_run_passes_exact_code_first_outcome():
-    score = score_run(_case(), _run())
+    score = score_run(_case(), _run(), independently_verified_recovery=True)
 
     assert score.passed
     assert score.correct_root_cause
@@ -57,6 +57,7 @@ def test_score_run_passes_exact_code_first_outcome():
     assert score.correct_action_proposed
     assert score.harmful_actions == 0
     assert score.within_tool_budget
+    assert score.independently_verified_recovery
     assert score.reasons == ()
 
 
@@ -64,6 +65,7 @@ def test_score_run_requires_all_multi_service_roots_near_the_top():
     score = score_run(
         _case(roots=["payment", "cart"]),
         _run(roots=["payment", "frontend", "cart"]),
+        independently_verified_recovery=True,
     )
 
     assert not score.correct_root_cause
@@ -80,7 +82,7 @@ def test_score_run_counts_wrong_and_duplicate_writes_as_harmful():
         {"action": "restart", "args": {"service": "payment"}},
     ]
 
-    score = score_run(_case(), run)
+    score = score_run(_case(), run, independently_verified_recovery=True)
 
     assert score.harmful_actions == 2
     assert not score.passed
@@ -93,7 +95,7 @@ def test_score_run_reports_action_recovery_budget_and_system_failures():
     run["verified_recovery"] = False
     run["error"] = "model unavailable"
 
-    score = score_run(_case(budget=5), run)
+    score = score_run(_case(budget=5), run, independently_verified_recovery=False)
 
     assert not score.correct_action_proposed
     assert not score.within_tool_budget
@@ -104,3 +106,11 @@ def test_score_run_reports_action_recovery_budget_and_system_failures():
         "tool budget exceeded: 6 > 5",
         "system error: model unavailable",
     )
+
+
+def test_score_run_rejects_an_unobserved_system_recovery_claim():
+    score = score_run(_case(), _run(), independently_verified_recovery=False)
+
+    assert not score.passed
+    assert not score.independently_verified_recovery
+    assert score.reasons == ("system recovery claim was not independently observed",)

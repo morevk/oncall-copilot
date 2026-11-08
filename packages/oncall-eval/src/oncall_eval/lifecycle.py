@@ -18,7 +18,8 @@ class ObservedFault:
 
     active: ActiveFault
     detection: Observation
-    recovery: Observation | None = None
+    system_recovery: Observation | None = None
+    cleanup_recovery: Observation | None = None
 
 
 @contextmanager
@@ -40,13 +41,14 @@ def observed_fault(
     except BaseException as exc:  # noqa: BLE001 - cleanup must also run for cancellation/interrupt
         failure = exc
 
-    # ``FlagdFaultInjector.__exit__`` has run before this block, so recovery
-    # can only pass after the disabled variant has been restored.
+    # ``FlagdFaultInjector.__exit__`` has run before this block.  This proves
+    # harness cleanup only; it must never be confused with recovery caused by
+    # the system under test while the injected fault was active.
     if activated:
         try:
-            recovery = poller.wait(fault["recovery"], phase="recovery")
+            recovery = poller.wait(fault["recovery"], phase="cleanup_recovery")
             if observed is not None:
-                observed.recovery = recovery
+                observed.cleanup_recovery = recovery
         except BaseException as recovery_failure:
             if failure is not None:
                 raise BaseExceptionGroup(

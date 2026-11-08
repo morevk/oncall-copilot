@@ -147,6 +147,7 @@ verify:
 	@printf 'shop frontend '; curl -fsS -o /dev/null -w '%{http_code}\n' localhost:8080/
 	@printf 'incident API  '; curl -fsS localhost:8000/healthz && echo
 	@printf 'lab           '; curl -fsS localhost:8020/healthz && echo
+	@printf 'eval reports  '; curl -fsS localhost:8030/healthz && echo
 # No -f here, unlike the three above: MCP's streamable-http endpoint answers a
 # bare GET with a 400, which is a SERVER THAT WORKS. curl still exits non-zero
 # when nothing is listening, so this fails on a dead service and passes on a
@@ -165,6 +166,7 @@ urls:
 	@echo "  Prometheus      http://localhost:9090"
 	@echo "  Incident UI     http://localhost:8000/"
 	@echo "  Lab             http://localhost:8020/"
+	@echo "  Eval reports    http://localhost:8030/"
 
 reload-rules:
 	curl -X POST http://localhost:9090/-/reload

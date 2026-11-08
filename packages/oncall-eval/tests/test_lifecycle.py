@@ -60,7 +60,7 @@ class RecordingPoller:
 
 class FailingRecoveryPoller(RecordingPoller):
     def wait(self, signal, *, phase: str) -> Observation:
-        if phase == "recovery":
+        if phase == "cleanup_recovery":
             self.phases.append((phase, self.injector.current_variant("paymentFailure")))
             raise SignalTimeout("recovery timed out")
         return super().wait(signal, phase=phase)
@@ -72,12 +72,13 @@ def test_observed_fault_detects_after_enable_and_recovers_after_disable(tmp_path
 
     with observed_fault(injector, poller, _fault()) as observed:  # type: ignore[arg-type]
         assert observed.detection.phase == "detection"
-        assert observed.recovery is None
+        assert observed.system_recovery is None
+        assert observed.cleanup_recovery is None
         assert injector.current_variant("paymentFailure") == "100%"
 
-    assert observed.recovery is not None
-    assert observed.recovery.phase == "recovery"
-    assert poller.phases == [("detection", "100%"), ("recovery", "off")]
+    assert observed.cleanup_recovery is not None
+    assert observed.cleanup_recovery.phase == "cleanup_recovery"
+    assert poller.phases == [("detection", "100%"), ("cleanup_recovery", "off")]
 
 
 def test_observed_fault_still_proves_recovery_when_evaluation_raises(tmp_path: Path):
@@ -95,7 +96,7 @@ def test_observed_fault_still_proves_recovery_when_evaluation_raises(tmp_path: P
         raise RuntimeError("evaluation failed")
 
     assert injector.current_variant("paymentFailure") == "off"
-    assert poller.phases == [("detection", "100%"), ("recovery", "off")]
+    assert poller.phases == [("detection", "100%"), ("cleanup_recovery", "off")]
 
 
 def test_observed_fault_preserves_evaluation_and_recovery_failures(tmp_path: Path):

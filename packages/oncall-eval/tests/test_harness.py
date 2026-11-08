@@ -2,7 +2,9 @@ import json
 from pathlib import Path
 
 import pytest
+from oncall_eval.execution import EvaluationEvent
 from oncall_eval.harness import main
+from oncall_eval.live_lock import live_evaluation_lock
 
 ROOT = Path(__file__).resolve().parents[3]
 
@@ -112,3 +114,56 @@ def test_cli_requires_explicit_acknowledgement_for_heldout_path():
         )
 
     assert caught.value.code == 2
+
+
+def test_live_cli_refuses_when_another_evaluation_holds_the_lock(tmp_path: Path, capsys):
+    lock = tmp_path / "live-evaluation.lock"
+
+    with live_evaluation_lock(lock):
+        result = main(
+            [
+                "--live",
+                "--yes-inject-faults",
+                "--cases",
+                str(ROOT / "eval" / "dev"),
+                "--manifest",
+                str(ROOT / "eval" / "faults" / "manifest.yaml"),
+                "--lock-file",
+                str(lock),
+                "--fail-under",
+                "1.0",
+            ]
+        )
+
+    assert result == 2
+    assert "another live evaluation" in capsys.readouterr().out
+
+
+def test_preflight_mode_requires_no_fault_acknowledgement(tmp_path: Path, monkeypatch, capsys):
+    called = []
+
+    def fake_execute(request, settings, emit):
+        called.append(request)
+        emit(EvaluationEvent("complete", "preflight PASS: stub"))
+        return type("Result", (), {"passed": True})()
+
+    monkeypatch.setattr("oncall_eval.harness.execute_evaluation", fake_execute)
+
+    result = main(
+        [
+            "--preflight",
+            "--cases",
+            str(ROOT / "eval" / "dev"),
+            "--manifest",
+            str(ROOT / "eval" / "faults" / "manifest.yaml"),
+            "--lock-file",
+            str(tmp_path / "preflight.lock"),
+            "--fail-under",
+            "1.0",
+        ]
+    )
+
+    assert result == 0
+    assert called[0].kind == "preflight"
+    assert called[0].config_id == "c1_single"
+    assert "preflight PASS" in capsys.readouterr().out

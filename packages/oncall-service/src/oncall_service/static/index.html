@@ -5,16 +5,22 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content="On-Call Copilot incident operations console" />
     <title>On-Call Copilot · Incident Console</title>
+    <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/assets/app.css" />
   </head>
   <body>
     <div class="app-shell">
       <header class="topbar">
-        <a class="brand" href="/" aria-label="On-Call Copilot home">
+        <a class="product-brand" href="/" aria-label="On-Call Copilot incidents">
           <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
-          <span><strong>On-Call</strong> Copilot</span>
+          <span class="brand-copy"><strong>On-Call Copilot</strong><small>Incidents</small></span>
         </a>
-        <div class="topbar-actions">
+        <nav class="product-nav" aria-label="On-Call Copilot applications">
+          <a href="http://127.0.0.1:8020/">Control center</a>
+          <a class="active" aria-current="page" href="/">Incidents</a>
+          <a href="http://127.0.0.1:8030/">Evaluations</a>
+        </nav>
+        <div class="topbar-context">
           <span class="connection" id="connection"><span></span> API connected</span>
           <button class="button button-quiet" id="live-button" type="button">Start live investigation</button>
           <button class="button button-primary" id="demo-button" type="button">
