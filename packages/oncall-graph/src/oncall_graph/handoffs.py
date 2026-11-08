@@ -267,20 +267,41 @@ def focus_service(state) -> str:
     return alert_service(state.get("alert"))
 
 
+def lesson_drop_line(lesson, *, service: str, symptom: str) -> str:
+    """Why this lesson is not guidance. The transcript shows this, not only the id."""
+    lesson_id = lesson.get("id") or ""
+    status = lesson.get("status")
+    if status != "approved":
+        why = "no status" if not status else f"status {status}"
+        return f"dropped lesson {lesson_id}: {why}"
+    preconditions = lesson.get("preconditions") or {}
+    pre_service = str(preconditions.get("service") or "").strip()
+    pre_symptom = str(preconditions.get("symptom") or "").strip()
+    if pre_service and service and pre_service != service:
+        return f"dropped lesson {lesson_id}: precondition service {pre_service} != {service}"
+    if pre_symptom:
+        return (
+            f"dropped lesson {lesson_id}: precondition symptom {pre_symptom!r} "
+            f"does not match {symptom!r}"
+        )
+    return f"dropped lesson {lesson_id}"
+
+
 def partition_lessons(lessons, *, service: str, symptom: str) -> tuple[list[dict], list[dict]]:
     """Split lessons into those the model may see and those code drops.
 
-    Pending and rejected lessons are dropped even when the preconditions match.
-    An approved lesson for another service is dropped too.
+    Only an explicit ``approved`` status can be kept. A missing status is
+    dropped, and so is ``pending``, ``rejected``, or anything else. An approved
+    lesson whose preconditions do not fit this case is dropped too.
     """
     kept = []
     dropped = []
     for lesson in lessons or []:
         if not isinstance(lesson, dict):
             continue
-        status = lesson.get("status") or "approved"
+        status = lesson.get("status")
         preconditions = lesson.get("preconditions") or {}
-        if status in ("rejected", "pending"):
+        if status != "approved":
             dropped.append(lesson)
             continue
         if not precondition_matches(preconditions, service=service, symptom=symptom):
@@ -346,7 +367,9 @@ def runbook_guidance(passages, lessons) -> str:
             f"passage {passage.get('id')}: service {passage.get('service')}; fix {passage.get('fix')}"
         )
     for lesson in lessons:
-        lines.append(f"lesson {lesson.get('id')}: {lesson.get('text')}")
+        # The playbook calls the sentence `statement`. The scripted lessons call it `text`.
+        sentence = lesson.get("text") or lesson.get("statement") or ""
+        lines.append(f"lesson {lesson.get('id')}: {sentence}")
     if len(lines) == 1:
         lines.append("none")
     lines.append("Propose one action that matches a passage above.")

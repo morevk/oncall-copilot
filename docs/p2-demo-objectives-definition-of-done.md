@@ -6,17 +6,17 @@
 how much of it the code already meets. That analysis was read against `600479e`; everything below
 was re-checked against the current tree, and the tests named here were run.
 
-"Done" means the code exists and a test covers it. A live demo has not been run for this
-assessment.
+"Done" means the code exists and a test covers it. The three payment alerts have since
+reached approval on a live shop. Objective 1 still stops before a real write and a recovery
+check.
 
-**Score: 15 of 25 done, one partial.** Objective 1 is the furthest along. Objective 2 is done in
-code: `restart`, `scale`, and `rollback` are not actions, and a model that names one is refused
-before the approval gate ([ADR-0007](decisions/0007-no-service-actions.md)). The log line itself
-is still P1's to put where `log_search` reads it. Objective 3's filtering is finished and tested,
-but nothing reachable over HTTP hands it a lesson store, so a demo run filters an empty list.
+**Score: 19 of 28 done.** Objective 1 is what remains. Objective 2 is done in code
+([ADR-0007](decisions/0007-no-service-actions.md)); the log line itself is still P1's to put
+where `log_search` reads it. Objective 3 is shown on `c2_team`: the live team is given the
+playbook, a dropped lesson names the precondition that failed, and a lesson with no status is
+dropped.
 
-The rows marked **decision** are P2's to settle. This document records them as open rather than
-choosing an answer.
+The row still marked **decision** is 1.10, how a 5-minute rate is verified. It is open.
 
 ---
 
@@ -71,58 +71,47 @@ what blocks the action.
 
 ## Objective 3 — an old lesson is rejected because its preconditions do not match
 
-**3 of 8 done, one partial.** The filter is written, tested against P1's real `LessonStore`, and
-`c2_team` calls it. The service builds that team with no store, so `load_lessons(None)` returns
-`([], [])` and the demo filters nothing.
+**8 of 8 done.** The demo is `c2_team`. The service builds that team with
+`LessonStore.from_postmortems()`, and the runbook step drops a lesson whose preconditions do not
+fit, with the reason on the transcript.
 
 | # | Done when | Where it stands |
 | --- | --- | --- |
 | 3.1 | `precondition_matches`, `partition_lessons` and `load_lessons` exist and drop a lesson whose preconditions do not fit the case. | **Done.** `briefs.py`, `handoffs.py`. |
 | 3.2 | The same filter runs against P1's `LessonStore` and keeps `les-read-the-flag-baseline-first` while dropping the two stale lessons. | **Done.** `tests/test_demo_scene_3.py` passes. |
 | 3.3 | The topology that filters is reachable over HTTP. | **Done.** `RUNNABLE` is `c1_single` and `c2_team` (`main.py`). At `600479e` the service refused everything but `c1_single`. |
-| 3.4 | **Decision.** Demo the rejection on `c2_team`, or teach `c1_single` to filter. P1 prefers `c1_single`, because the objective is about rejecting bad memory and the simpler topology removes a variable. | **Open.** `c1_single` never calls `handoffs`. |
-| 3.5 | The live run is given the store: `Team(shop=shop, store=LessonStore.from_postmortems(), …)`. | **Not done.** `_open_runner` passes no store (`main.py`), so the filter runs on an empty list. |
-| 3.6 | A dropped lesson shows the precondition that disqualified it, not only its id. The objective asks to show the reasoning. | **Partial.** The transcript records `dropped lesson <id>` (`c2_team.py`) and nothing about why. |
-| 3.7 | A lesson with no status is dropped. | **Not done.** `partition_lessons` defaults a missing status to `"approved"` (`handoffs.py`), so an unreviewed lesson that reaches it is shown as guidance. The store prevents that today; the graph does not. |
-| 3.8 | A graph-level test builds `Team` against the real `LessonStore` and checks which lessons were dropped and why. | **Not done.** `test_team.py` passes a hand-written list. |
+| 3.4 | **Decision.** Demo the rejection on `c2_team`, or teach `c1_single` to filter. P1 prefers `c1_single`, because the objective is about rejecting bad memory and the simpler topology removes a variable. | **Done.** `c2_team`. `c1_single` does not filter lessons. |
+| 3.5 | The live run is given the store: `Team(shop=shop, store=LessonStore.from_postmortems(), …)`. | **Done.** `_open_runner` in `main.py`. The run record's `playbook_hash` is that store's hash. |
+| 3.6 | A dropped lesson shows the precondition that disqualified it, not only its id. The objective asks to show the reasoning. | **Done.** `lesson_drop_line` in `handoffs.py`, copied onto the runbook transcript. |
+| 3.7 | A lesson with no status is dropped. | **Done.** `partition_lessons` keeps only an explicit `approved`. `test_a_lesson_with_no_status_is_dropped`. |
+| 3.8 | A graph-level test builds `Team` against the real `LessonStore` and checks which lessons were dropped and why. | **Done.** `test_the_team_runbook_drops_the_stale_lessons_and_says_why`. |
 
-P1 owns the store and the seed postmortems, and both landed in commit `7884566`. What remains here
-is wiring and the decision in 3.4.
+P1 owns the store and the seed postmortems, and both landed in commit `7884566`.
 
 ---
 
 ## Order
 
-1. 2.1 is settled ([ADR-0007](decisions/0007-no-service-actions.md)). 3.4 is still open, and it is
-   what remains before objective 3 can be shown. P1 can author the injected log line now.
-2. 3.5. One argument at the call site, and it is the only thing keeping objective 3 off the HTTP
-   path.
-3. 1.5 and 1.6, the tool adapter and the registry. They gate 1.7, 1.9 and 1.11.
-4. 1.7 through 1.10, then 1.12 and 1.13. `tests/test_apply_reaches_the_real_shop.py` is the
-   executable check for 1.7 and 1.8.
+1. 2.1 and 3.4 are settled. Objective 2 and objective 3 are done in code. P1 can author the
+   injected log line now.
+2. 1.5 and 1.6, the tool adapter and the registry. They gate 1.7, 1.9 and 1.11.
+3. 1.7 through 1.10, then 1.12 and 1.13. `tests/test_apply_reaches_the_real_shop.py` is the
+   executable check for 1.7 and 1.8. 1.10 is still an open decision: a 5-minute rate cannot
+   confirm recovery instantly.
 
-Items 1.6 and 3.5 both edit `packages/oncall-service/src/oncall_service/main.py`, which lives in
-P5's package. The gap analysis assigns that change to P2; it is worth agreeing with P5 first.
+`_open_runner` in `packages/oncall-service/src/oncall_service/main.py` now builds the team with
+the playbook. That file is in P5's package. The gap analysis assigns the change to P2.
 
 ## How this was checked
 
 ```bash
-git rev-parse --short HEAD            # a689680
+git rev-parse --short HEAD
 
-# the live path still builds the fixture shop, and the team gets no store
-sed -n '482,489p' packages/oncall-service/src/oncall_service/main.py
+# the live team is given the playbook
+sed -n '/def _open_runner/,+20p' packages/oncall-service/src/oncall_service/main.py
 
-# a tool registry is still refused
-sed -n '42,51p' packages/oncall-graph/src/oncall_graph/build.py
-
-# restart is not an action
-sed -n '27,42p' packages/oncall-graph/src/oncall_graph/planning/plan.py
-
-# the gate still reads the fixture
-sed -n '181,196p' packages/oncall-graph/src/oncall_graph/nodes/remediate.py
-
-uv run pytest tests/test_apply_reaches_the_real_shop.py \
-              tests/test_demo_scene_3.py \
-              packages/oncall-graph -q
-# 73 passed, 7 skipped — the seven are test_apply_reaches_the_real_shop.py
+uv run pytest tests/test_demo_scene_3.py \
+              packages/oncall-graph/tests/test_evidence.py \
+              packages/oncall-graph/tests/test_team.py \
+              packages/oncall-service/tests/test_service.py -q
 ```

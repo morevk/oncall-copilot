@@ -7,6 +7,7 @@ from langchain_core.messages import AIMessage, ToolMessage
 from oncall_graph.briefs import alert_service
 from oncall_graph.config import SPECIALIST_MODEL
 from oncall_graph.evidence import (
+    CHARGE_FAILURE,
     CLIENT_CHARGE,
     ERROR_BY_SERVICE,
     MAX_CONFIDENCE,
@@ -90,7 +91,10 @@ def test_payment_failure_blames_payment_and_refutes_unreachable():
     reports, hypotheses, ruled_out = diagnose(["checkout", "payment"], candidates, exchanges, 4)
     verdicts = {item["service"]: item.get("local_cause") for item in reports}
     assert verdicts == {"checkout": False, "payment": True}
-    assert [item["statement"] for item in hypotheses] == ["payment is returning errors"]
+    assert [item["statement"] for item in hypotheses] == [
+        "payment is returning errors",
+        CHARGE_FAILURE,
+    ]
     assert any(line.startswith(UNREACHABLE) for line in ruled_out)
     assert any(line.startswith("checkout is returning errors") for line in ruled_out)
 
@@ -124,6 +128,24 @@ def test_a_healthy_shop_grounds_only_the_alert_service_and_finds_no_cause():
     assert reports == [{"service": "checkout", "tool_calls": 4, "local_cause": False}]
     assert hypotheses == []
     assert len(ruled_out) == 2
+
+
+def test_charge_failures_with_the_server_up_blame_payment_not_flagd():
+    exchanges = _exchanges(
+        errors={"checkout": 0.0, "payment": 0.0, "flagd": 0.35},
+        server_calls=1.3,
+        client_errors=1.2,
+    )
+    candidates = ground_suspects("checkout", exchanges)
+    assert "flagd" not in {item["service"] for item in candidates}
+
+    reports, hypotheses, ruled_out = diagnose(["checkout"], candidates, exchanges, 4)
+    assert {"service": "payment", "local_cause": True, "tool_calls": 0} in reports
+    assert next(item for item in reports if item["service"] == "checkout")["local_cause"] is False
+    assert hypotheses[0]["service"] == "payment"
+    assert hypotheses[0]["statement"] == CHARGE_FAILURE
+    assert hypotheses[0]["confidence"] >= 0.5
+    assert any(line.startswith(UNREACHABLE) for line in ruled_out)
 
 
 def test_an_unread_query_is_no_verdict_not_a_denial():

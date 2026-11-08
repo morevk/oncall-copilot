@@ -85,8 +85,8 @@ def test_a_missing_status_filter_means_approved_not_everything(tmp_path: Path) -
 
 
 def test_every_row_carries_an_explicit_status(tmp_path: Path) -> None:
-    """`partition_lessons` defaults a missing status to "approved" -- fail-open.
-    Nothing this store emits can reach that branch."""
+    """`partition_lessons` keeps only an explicit `approved`. Nothing this store
+    emits arrives without one."""
     store = build(tmp_path, CORPUS, OTHER)
 
     for row in store.search() + store.rejected():

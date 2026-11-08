@@ -13,7 +13,10 @@ scene to show anything.
 
 from __future__ import annotations
 
-from oncall_graph.handoffs import load_lessons
+from oncall_graph.handoffs import load_lessons, runbook_guidance
+from oncall_graph.state import new_incident
+from oncall_graph.stubs import Shop
+from oncall_graph.topologies.c2_team import Team
 from oncall_memory import APPLICABLE_STATUS, LessonStore
 
 #: The alert the demo actually pages. `eval/faults/manifest.yaml` publishes the
@@ -49,11 +52,9 @@ def test_a_dropped_lesson_carries_the_precondition_that_disqualified_it() -> Non
 def test_nothing_unreviewed_or_refused_ever_reaches_the_graph() -> None:
     """The invariant, checked at the seam rather than inside the store.
 
-    `partition_lessons` defaults a lesson with no status to "approved" and drops
-    only the statuses it names, so an `inferred` lesson that reached it WOULD be
-    kept and shown as reviewed guidance. The store is what prevents that, and
-    this asserts the property rather than that quirk -- it keeps passing if P2
-    makes the graph fail closed too.
+    The store only hands over approved lessons, and `partition_lessons` keeps
+    only an explicit `approved`, so a lesson that arrives with no status is
+    dropped rather than shown as guidance.
     """
     kept, dropped = load_lessons(playbook(), **CASE)
 
@@ -72,6 +73,54 @@ def test_the_rejected_lesson_is_a_deliverable_and_stays_out_of_the_run() -> None
 
     assert refused["reason"]
     assert refused["id"] not in [lesson["id"] for lesson in kept + dropped]
+
+
+def test_the_team_runbook_drops_the_stale_lessons_and_says_why() -> None:
+    """The node the live team runs, against the real playbook, with no model call.
+
+    The budget is already spent, so the runbook specialist is not asked. The
+    filter still runs, and the transcript has to name the precondition.
+    """
+    team = Team(shop=Shop(), store=playbook(), tool_budget=10)
+    state = new_incident(
+        alert={
+            "status": "firing",
+            "labels": {"alertname": "CheckoutErrorRate", "service": "checkout"},
+            "annotations": {"summary": CASE["symptom"]},
+            "startsAt": "2026-11-08T00:00:00Z",
+        },
+        hypotheses=[
+            {
+                "service": "payment",
+                "statement": "paymentFailure flag",
+                "evidence_refs": ["checkout_error_rate"],
+                "confidence": 0.9,
+            }
+        ],
+        tool_budget=10,
+        tool_calls=10,
+    )
+    update = team.runbook(state)
+    lines = [item["text"] for item in update["transcript"]]
+    result = update["last"]["result"]
+
+    assert [lesson["id"] for lesson in result["lessons"]] == ["les-read-the-flag-baseline-first"]
+    assert result["dropped_lessons"] == [
+        "les-a-soft-limit-never-fails",
+        "les-health-check-names-a-binary",
+    ]
+    assert (
+        "dropped lesson les-a-soft-limit-never-fails: precondition service product-catalog != payment"
+        in lines
+    )
+    assert (
+        "dropped lesson les-health-check-names-a-binary: precondition service recommendation != payment"
+        in lines
+    )
+    guidance = runbook_guidance(result["passages"], result["lessons"])
+    assert "les-read-the-flag-baseline-first" in guidance
+    assert "read the flagd baseline" in guidance
+    assert "les-a-soft-limit-never-fails" not in guidance
 
 
 def test_an_empty_playbook_drops_nothing_and_raises_nothing() -> None:

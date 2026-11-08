@@ -7,6 +7,7 @@ dependencies = [
     "fastapi>=0.115",
     "oncall-contracts",
     "oncall-graph",
+    "oncall-memory",
     "uvicorn[standard]>=0.34",
 ]
 
@@ -17,3 +18,4 @@ build-backend = "hatchling.build"
 [tool.uv.sources]
 oncall-contracts = { workspace = true }
 oncall-graph = { workspace = true }
+oncall-memory = { workspace = true }

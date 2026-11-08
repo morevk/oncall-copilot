@@ -48,6 +48,13 @@ LOCAL_CAUSE_LINE = 0.5
 DOWNSTREAM_CAP = 0.45
 
 UNREACHABLE = "payment is unreachable from checkout"
+#: Checkout's Charge client is erroring and payment is still taking the calls.
+#: That is paymentFailure: the server span-error ratio stays quiet, because a
+#: rejected charge is a 422, not STATUS_CODE_ERROR. Above the local-cause line
+#: and under a supported error-ratio score, so the error-ratio statement stays
+#: the one the commander corrects when both are present.
+CHARGE_FAILURE = "payment is failing charges"
+CHARGE_FAILURE_CONFIDENCE = 0.65
 #: The checkout copy tests the unreachable claim; the cause it names is payment.
 UNREACHABLE_TESTED_BY = "checkout"
 UNREACHABLE_CAUSE = "payment"
@@ -235,7 +242,10 @@ def ground_suspects(
     for query, result in _promql(exchanges):
         for metric, value in _series(result):
             name = metric.get("service_name")
-            if not name:
+            if not name or (name == "flagd" and name != alert_service):
+                # flagd's server spans sit near a 35% error rate with every fault
+                # disarmed. Grounding that baseline made the commander promote
+                # flagd and drop the payment passage.
                 continue
             slow = "histogram_quantile" in query and value >= latency_ms
             if slow or (_is_error_ratio(query) and value >= error_threshold):
@@ -417,6 +427,16 @@ def missing_reads(services, candidates, exchanges) -> list[str]:
     return missing
 
 
+def _record_local_cause(reports: list[dict], services: list[str], service: str) -> None:
+    """Mark ``service`` as the local cause, adding a report when this copy did not own it."""
+    if service not in services:
+        reports.append({"service": service, "local_cause": True, "tool_calls": 0})
+        return
+    for report in reports:
+        if report["service"] == service:
+            report["local_cause"] = True
+
+
 def diagnose(
     services, candidates, exchanges, tool_calls: int
 ) -> tuple[list[dict], list[dict], list[str]]:
@@ -428,6 +448,8 @@ def diagnose(
     report with no ``local_cause``, which the monitor does not read as a
     denial. Checkout's errors are not local when its Charge client spans are
     erroring. A confirmed unreachable claim is a payment report and hypothesis.
+    The other half of that pair — client errors while the server is still
+    taking calls — is the same, for paymentFailure.
     """
     services = [service for service in services or [] if service]
     if not services:
@@ -437,6 +459,7 @@ def diagnose(
     reports: list[dict] = []
     hypotheses: list[dict] = []
     unreachable_confirmed = False
+    charge_failure_confirmed = False
     for index, service in enumerate(services):
         report: dict = {"service": service, "tool_calls": int(shares[index])}
         verdicts = []
@@ -446,8 +469,25 @@ def diagnose(
             scored = score_candidate(candidate, exchanges)
             confidence = scored["confidence"]
             if candidate.get("kind") == "unreachable":
+                client, server = unreachable_pair(exchanges)
                 if scored["measured"] and confidence >= LOCAL_CAUSE_LINE:
                     unreachable_confirmed = True
+                if (
+                    scored["measured"]
+                    and client is not None
+                    and server is not None
+                    and client > 0
+                    and server > 0
+                ):
+                    charge_failure_confirmed = True
+                    hypotheses.append(
+                        {
+                            "service": UNREACHABLE_CAUSE,
+                            "statement": CHARGE_FAILURE,
+                            "evidence_refs": scored["refs"],
+                            "confidence": CHARGE_FAILURE_CONFIDENCE,
+                        }
+                    )
                 hypotheses.append(
                     {
                         "service": UNREACHABLE_CAUSE,
@@ -472,12 +512,8 @@ def diagnose(
         if verdicts:
             report["local_cause"] = max(verdicts) >= LOCAL_CAUSE_LINE
         reports.append(report)
-    if unreachable_confirmed and UNREACHABLE_CAUSE not in services:
-        reports.append({"service": UNREACHABLE_CAUSE, "local_cause": True, "tool_calls": 0})
-    elif unreachable_confirmed:
-        for report in reports:
-            if report["service"] == UNREACHABLE_CAUSE:
-                report["local_cause"] = True
+    if unreachable_confirmed or charge_failure_confirmed:
+        _record_local_cause(reports, services, UNREACHABLE_CAUSE)
     hypotheses.sort(key=lambda item: item["confidence"], reverse=True)
     supported = [item for item in hypotheses if item["confidence"] >= LOCAL_CAUSE_LINE]
     ruled_out = [
