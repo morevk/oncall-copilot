@@ -25,7 +25,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, Send
 
-from ..agent import Agent
+from ..agent import Agent, refused_tool_lines
 from ..briefs import (
     REMEDIATION_RESERVE,
     alert_service,
@@ -152,7 +152,7 @@ RUNBOOK_PROMPT = (
 
 REMEDIATION_PROMPT = (
     "You are the remediation specialist. Propose exactly one allow-listed action "
-    "by calling set_flag, restart, scale, or rollback, and pass expected_effect. "
+    "by calling set_flag, and pass expected_effect. "
     "Calling the tool only proposes it. The shop does not change until an engineer approves. "
     "Do not propose a second action. If verification already failed, propose nothing."
 )
@@ -651,15 +651,15 @@ class Team:
                 proposals = list(box["proposals"])
             rows = result["rows"]
             spent = result["tool_calls"]
+        lines = ["remediation proposed" if proposals else "remediation proposed nothing"]
+        if remaining > 0:
+            lines.extend(refused_tool_lines(result["messages"]))
         return {
             "tool_calls": _absolute_calls(state, spent),
             "meter_rows": rows,
             "status": "RUNNING",
             "last": {"result": {"proposals": proposals, "passages": passages, "lessons": lessons}},
-            "transcript": transcript_lines(
-                "remediation",
-                "remediation proposed" if proposals else "remediation proposed nothing",
-            ),
+            "transcript": transcript_lines("remediation", *lines),
         }
 
     def comms(self, state):

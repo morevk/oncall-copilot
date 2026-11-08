@@ -24,7 +24,12 @@ READ_TOOLS = (
     "incident_record",
     "status_draft",
 )
-ACTION_TOOLS = ("set_flag", "restart", "scale", "rollback")
+# The only action a model may propose. `restart`, `scale` and a service
+# `rollback` are absent on purpose: no runbook names them and no server
+# implements them, so `validate_action` rejects each as an unknown action. A
+# log line that asks for a restart never becomes a proposal the approval gate
+# will show. See docs/decisions/0007-no-service-actions.md.
+ACTION_TOOLS = ("set_flag",)
 KNOWN_TOOLS = READ_TOOLS + ACTION_TOOLS
 
 #: The tool that restores a flag to an earlier variant. DELIBERATELY NOT IN
@@ -32,6 +37,7 @@ KNOWN_TOOLS = READ_TOOLS + ACTION_TOOLS
 #: rejects it as an unknown action. Only `monitor.code_rollback` names it, which
 #: is the same split `mcp-ops-actions` enforces server-side -- one tool that can
 #: only clear a fault, one that can restore one, so "undo" never reads as "fix".
+#: This is the flag undo. It is not the service `rollback` removed above.
 ROLLBACK_FLAG_TOOL = "rollback_flag"
 #: Everything `Shop.apply` will run: the proposable actions plus the code-only
 #: inverse above.
@@ -58,9 +64,6 @@ class Variant(str):
 # Typed arguments the executor will accept. Totals and shell strings are not here.
 ACTION_ARGS = {
     "set_flag": {"flag": str, "variant": Variant},
-    "restart": {"service": str},
-    "scale": {"service": str, "replicas": int},
-    "rollback": {"service": str},
 }
 
 
@@ -69,24 +72,19 @@ def default_rollback(action, args):
     if action not in ACTION_TOOLS:
         raise ValueError(f"unknown action: {action!r}")
     args = dict(args or {})
-    if action == "set_flag":
-        # THE INVERSE IS NO LONGER COMPUTABLE HERE. With a boolean it was `not
-        # enabled`; with a variant there is no `not "100%"`, and the variant that
-        # re-arms a fault is named by the runbook -- which this package may not
-        # read. So this returns the procedure, and `monitor.code_rollback` builds
-        # the actual call from the `previous` variant the forward write reported.
-        # That is exact where negation was only ever an assumption.
-        flag = args.get("flag")
-        variant = args.get("variant")
-        if not isinstance(flag, str) or not flag.strip():
-            raise ValueError("set_flag.flag must be a non-empty string")
-        if not isinstance(variant, str) or not variant.strip():
-            raise ValueError("set_flag.variant must be a non-empty string")
-        return f"rollback_flag {flag} to its previous variant"
-    service = args.get("service")
-    if not isinstance(service, str) or not service.strip():
-        raise ValueError(f"{action}.service must be a non-empty string")
-    return f"rollback {service}"
+    # THE INVERSE IS NO LONGER COMPUTABLE HERE. With a boolean it was `not
+    # enabled`; with a variant there is no `not "100%"`, and the variant that
+    # re-arms a fault is named by the runbook -- which this package may not
+    # read. So this returns the procedure, and `monitor.code_rollback` builds
+    # the actual call from the `previous` variant the forward write reported.
+    # That is exact where negation was only ever an assumption.
+    flag = args.get("flag")
+    variant = args.get("variant")
+    if not isinstance(flag, str) or not flag.strip():
+        raise ValueError("set_flag.flag must be a non-empty string")
+    if not isinstance(variant, str) or not variant.strip():
+        raise ValueError("set_flag.variant must be a non-empty string")
+    return f"rollback_flag {flag} to its previous variant"
 
 
 _TOKEN = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
@@ -132,12 +130,6 @@ def _reject_shell(value, *, action):
 
 
 def _typed_arg(tool, key, value, typ):
-    if typ is int:
-        if isinstance(value, bool) or not isinstance(value, int):
-            raise ValueError(f"{tool}.{key} must be an integer")
-        if key == "replicas" and value < 1:
-            raise ValueError(f"{tool}.{key}={value} is outside the allow-list")
-        return value
     if typ is Variant:
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"{tool}.{key} must be a non-empty string")

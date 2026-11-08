@@ -395,7 +395,7 @@ Passages whose service or preconditions miss this case are dropped. Lessons come
 
 ## 11. `remediation`
 
-One loop with the proposal tools `set_flag`, `restart`, `scale`, and `rollback`. Calling one records a proposal. The shop does not change. The prompt asks for one action. If this incident is a reinvestigation, the brief contains `Verification: recovered=False` and the prompt says to propose nothing.
+One loop with the proposal tool `set_flag`. Calling it records a proposal. The shop does not change. The prompt asks for one action. `restart`, `scale`, and `rollback` are not tools. If this incident is a reinvestigation, the brief contains `Verification: recovered=False` and the prompt says to propose nothing.
 
 The guidance is the matched passages and lessons from step 10, not the raw retrieval dump.
 

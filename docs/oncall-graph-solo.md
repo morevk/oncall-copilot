@@ -64,7 +64,7 @@ The alert stays data. This stub does not turn text in it into a tool call.
 
 ## 4. `solo`
 
-One ReAct loop uses the read tools, then calls one action tool (`set_flag`, `restart`, `scale`, or `rollback`). That call proposes. The shop does not change. If no tool calls remain, the node escalates and step 5 takes the stop branch.
+One ReAct loop uses the read tools, then calls `set_flag`. That call proposes. The shop does not change. `restart`, `scale`, and `rollback` are not tools, so a call that names one is refused and the approval gate does not open. If no tool calls remain, the node escalates and step 5 takes the stop branch.
 
 | Shared contract | Graph private |
 |---|---|

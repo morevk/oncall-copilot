@@ -166,7 +166,7 @@ When the graph pauses, `__interrupt__[0].value` is:
 
 | Field | Type | Required |
 |---|---|---|
-| `command.action` | `set_flag \| restart \| scale \| rollback` | yes |
+| `command.action` | `set_flag` | yes |
 | `command.args` | object, §2.3 | yes |
 | `expected_effect` | non-empty string | yes |
 | `payload_hash` | hex SHA-256 of the canonical command | yes |
@@ -180,7 +180,7 @@ The service shows that object to the engineer and resumes with one of:
 |---|---|---|
 | Approve | `{"decision": "approve", "payload_hash": "<the hash just shown>"}` | Runs that command. The private channel stores the hash for execute. |
 | Reject | `{"decision": "reject"}` | `status` `REJECTED`. No shop write. |
-| Edit | `{"decision": "edit", "command": {"action", "args", "expected_effect"}}` | Does not run the old command. Interrupts again with the new command and a new hash. |
+| Edit | `{"decision": "edit", "command": {"action", "args", "expected_effect"}}` | A command `validate_action` accepts does not run the old command. The node interrupts again with the new command and a new hash. A command it rejects, including `restart`, `scale`, and `rollback`, interrupts again with the same command and `error`. The hash does not change and nothing is written. |
 | Stale hash | `{"decision": "approve", "payload_hash": "<an older hash>"}` | Interrupts again. No shop write. |
 
 `approve` and `approved` are the same decision. `reject` and `rejected` are the same decision. Any other `decision` leaves the node paused.
@@ -217,7 +217,7 @@ The plan is the stage and the reads still intended. Hypotheses and the one write
 | `verify` | Checking whether the shop recovered |
 | `communicate` | Drafting the incident note |
 
-`steps[].tool` is `promql`, `log_search`, `traces`, `recent_changes`, `search_runbooks`, `incident_record`, or `status_draft`. `set_flag`, `restart`, `scale`, and `rollback` are not steps.
+`steps[].tool` is `promql`, `log_search`, `traces`, `recent_changes`, `search_runbooks`, `incident_record`, or `status_draft`. `set_flag` is not a step. `restart`, `scale`, and `rollback` are not actions.
 
 `validate_plan` is internal. The service does not call it. A plan that fails it never becomes `proposed_action`.
 
@@ -331,15 +331,14 @@ One write, typed arguments, an expected effect, and a rollback.
 | Action | Arguments | Default rollback |
 |---|---|---|
 | `set_flag` | `flag: str`, `variant: Variant` | `rollback_flag` of the same flag, restoring the `previous` variant the write reported — see [ADR-0005](decisions/0005-one-set_flag-payload.md) |
-| `restart` | `service: str` | `rollback` of that service |
-| `scale` | `service: str`, `replicas: int` (`>= 1`) | `rollback` of that service |
-| `rollback` | `service: str` | the procedure names that service; it does not nest another rollback |
+
+`restart`, `scale`, and a service `rollback` are not actions. `validate_action` rejects each as an unknown action. See [ADR-0007](decisions/0007-no-service-actions.md). `rollback_flag` restores a flag and is code-only: the model may not propose it.
 
 On `ProposedAction`, `rollback` is that procedure as a string. The structured inverse, when code must apply one, stays in private `pending_rollback`.
 
 Names match `^[A-Za-z_][A-Za-z0-9_-]*$`. `command`, `cmd`, `shell`, `script`, and `exec` are rejected as argument names. There is no shell tool.
 
-This list is wider than `oncall_knowledge.schema.ACTION_NAMES`, which currently has `set_flag` and `none`. The shared list belongs in `oncall_contracts.tools` when P3 adds it. Until then the graph allow-list above is the list a proposal must use. `none` is a runbook statement, not an action the graph executes.
+The executable name matches `oncall_knowledge.schema.ACTION_NAMES`, which has `set_flag` and `none`. `none` is a runbook statement, not an action the graph executes.
 
 The command key is `action`, matching `ProposedAction` and runbook front matter. `rollback` on that object is the procedure string. The interrupt hashes `{action, args, expected_effect}`.
 
@@ -365,10 +364,10 @@ Per-agent allow-list the registry must already enforce before a call reaches the
 | Diagnosis, one copy per suspect | `promql`, `log_search`, `traces`, `recent_changes`. Read only. No write tool is present on that copy. |
 | Runbook | `search_runbooks`, plus the lesson store. Read only. |
 | Comms | `incident_record`, `status_draft`. Drafts are not sent by the tool. |
-| Remediation | Proposal schemas for the four actions. The proposal call does not change the shop. |
-| Solo (C1) | Every read tool and the four proposal schemas. The same approval node still gates the write. |
+| Remediation | The `set_flag` proposal schema. The proposal call does not change the shop. |
+| Solo (C1) | Every read tool and the `set_flag` proposal schema. The same approval node still gates the write. |
 
-Write implementations (`set_flag`, `restart`, `scale`, `rollback`) are callable by the approval node after the hash matches. They are not callable by the model. A diagnosis registry that contains any `access: write` tool is a broken injection, and the service must refuse to compile that graph.
+`set_flag` is callable by the approval node after the hash matches. It is not callable by the model as a write. `rollback_flag` is callable only from `code_rollback`. A diagnosis registry that contains any `access: write` tool is a broken injection, and the service must refuse to compile that graph.
 
 Tool results are data. A log line that says `docker exec` is evidence text. It is not a tool call.
 
