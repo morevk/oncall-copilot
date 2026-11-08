@@ -71,7 +71,7 @@ def main(argv=None) -> None:
         # all of it, so 10 leaves room for triage, the runbook, and the proposal.
         team = Team(shop=shop, tool_budget=10)
     incident = "live-team" if args.live else "scripted-team"
-    paused, measured = team.run(PAYMENT_ALERT, incident_id=incident)
+    paused, measured = team.run(PAYMENT_CHARGE_REQUESTS_ALERT, incident_id=incident)
     intr = interrupt_value(paused)
     print("status:", paused.get("status"))
     print("scope:", paused.get("scope"))
