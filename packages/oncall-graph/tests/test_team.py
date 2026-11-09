@@ -7,11 +7,15 @@ from langchain_core.messages import AIMessage, ToolMessage
 from oncall_graph.briefs import assign_severity, render_brief, split_budget
 from oncall_graph.config import COMMANDER_MODEL, SPECIALIST_MODEL
 from oncall_graph.handoffs import (
+    complete_passages,
     decide_commander,
     diagnosis_from_exchanges,
     diagnosis_plan_text,
+    parse_tool_content,
     partition_lessons,
     partition_passages,
+    passages_from_exchanges,
+    runbook_guidance,
 )
 from oncall_graph.meter import reset_log
 from oncall_graph.planning.monitor import monitor
@@ -247,6 +251,83 @@ def test_payment_service_failed_has_its_own_runbook_passage():
         "rb-payment-failure",
         "rb-payment-service-failed",
     ]
+
+
+class _Runbook:
+    def __init__(self, document):
+        self.document = document
+        self.calls = []
+
+    def invoke(self, args):
+        self.calls.append(dict(args))
+        return self.document
+
+
+class _Registry:
+    def __init__(self, document):
+        self.tool = _Runbook(document)
+
+    def __contains__(self, name):
+        return name == "get_runbook"
+
+    def __getitem__(self, name):
+        assert name == "get_runbook"
+        return self.tool
+
+
+def test_a_search_hit_list_becomes_a_passage_and_loads_its_fix():
+    """The runbook server returns hits, not the stub's passages object."""
+    hit = {
+        "document_id": "payment-failure",
+        "service": "payment",
+        "excerpt": "The payment service rejects a percentage of charge requests.",
+        "preconditions": ["the flagd paymentFailure flag is enabled"],
+    }
+    parsed = parse_tool_content(str([hit]))
+    passages = passages_from_exchanges([("search_runbooks", {"query": "checkout"}, parsed)])
+    assert passages[0]["id"] == "payment-failure"
+    assert passages[0]["service"] == "payment"
+    assert "preconditions" not in passages[0]
+    assert "fix" not in passages[0]
+
+    registry = _Registry(
+        {
+            "symptom": "checkout returns HTTP 422 and payment transactions stop",
+            "fix": {"action": "set_flag", "args": {"flag": "paymentFailure", "variant": "off"}},
+            "preconditions": ["the flagd paymentFailure flag is enabled"],
+        }
+    )
+    filled = complete_passages(passages, registry)
+    assert registry.tool.calls == [{"document_id": "payment-failure"}]
+    assert filled[0]["fix"] == "set_flag flag paymentFailure variant off"
+    assert filled[0]["symptom"].startswith("checkout returns HTTP 422")
+    assert "preconditions" not in filled[0]
+    guidance = runbook_guidance(filled, [])
+    assert "paymentFailure" in guidance
+    assert "variant off" in guidance
+
+
+def test_stub_passages_keep_their_fix_and_do_not_call_get_runbook():
+    raw = {
+        "passages": [
+            {
+                "id": "rb-payment-failure",
+                "service": "payment",
+                "symptom": "checkout error rate",
+                "preconditions": {"service": "payment", "symptom": "checkout error rate"},
+                "fix": "set_flag paymentFailure variant off",
+            }
+        ]
+    }
+    passages = passages_from_exchanges([("search_runbooks", {}, raw)])
+    assert passages[0]["preconditions"]["symptom"] == "checkout error rate"
+    assert passages[0]["fix"] == "set_flag paymentFailure variant off"
+
+    class Untouched:
+        def __contains__(self, name):
+            raise AssertionError(name)
+
+    assert complete_passages(passages, Untouched()) == passages
 
 
 def test_lessons_with_the_wrong_preconditions_are_dropped():

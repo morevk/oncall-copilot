@@ -55,6 +55,7 @@ from ..evidence import (
 )
 from ..evidence import diagnose as diagnose_from_evidence
 from ..handoffs import (
+    complete_passages,
     decide_commander,
     diagnosis_from_exchanges,
     diagnosis_plan_text,
@@ -618,6 +619,8 @@ class Team:
                 _worker_brief(state, "runbook", allowance),
             )
             passages = passages_from_exchanges(exchanges_from_messages(result["messages"]))
+            if self.tools is not None:
+                passages = complete_passages(passages, self.tools)
             rows = result["rows"]
             spent = result["tool_calls"]
         kept_passages, dropped_passages = partition_passages(
