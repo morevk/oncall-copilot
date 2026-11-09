@@ -15,6 +15,7 @@ const runnerWarning = document.querySelector("#runner-warning");
 const runnerReport = document.querySelector("#runner-report");
 const preflightButton = document.querySelector("#run-preflight");
 const deterministicButton = document.querySelector("#run-deterministic");
+const evaluationTopology = document.querySelector("#evaluation-topology");
 const acknowledgementCheck = document.querySelector("#ack-check");
 const acknowledgementInput = document.querySelector("#ack-phrase");
 const requiredAcknowledgement = document.querySelector("#required-ack");
@@ -93,12 +94,35 @@ function syncRunnerControls() {
   const available = Boolean(runner.capabilities);
   preflightButton.disabled = !available || runnerActive();
   deterministicButton.disabled = !available || runnerActive() || runner.faultsArmed || !acknowledged;
+  evaluationTopology.disabled = !available || runnerActive();
   acknowledgementCheck.disabled = runnerActive();
   acknowledgementInput.disabled = runnerActive();
   runnerWarning.classList.toggle("hidden", !runner.faultsArmed);
   runnerWarning.textContent = runner.faultsArmed
     ? "A fault is already armed. Disarm it before starting a deterministic evaluation; the harness requires a clean baseline."
     : "";
+}
+
+function topologyLabel(configId) {
+  return ({
+    c1_single: "C1 · Single agent",
+    c2_team: "C2 · Commander + specialists",
+  })[configId] || configId;
+}
+
+function renderEvaluationTopologies(topologies) {
+  const previous = evaluationTopology.value || "c1_single";
+  const available = Array.isArray(topologies) ? topologies : [];
+  evaluationTopology.replaceChildren();
+  available.forEach((configId) => {
+    const option = document.createElement("option");
+    option.value = configId;
+    option.textContent = topologyLabel(configId);
+    evaluationTopology.append(option);
+  });
+  evaluationTopology.value = available.includes(previous)
+    ? previous
+    : (available.includes("c1_single") ? "c1_single" : available[0] || "");
 }
 
 function setRunnerState(state) {
@@ -275,6 +299,9 @@ function reportFor(job) {
 
 function renderRunnerJob(job, { resetEvents = false } = {}) {
   runner.job = job;
+  if (job.config_id && Array.from(evaluationTopology.options).some((item) => item.value === job.config_id)) {
+    evaluationTopology.value = job.config_id;
+  }
   setRunnerState(job.state);
   setRunnerMessage(job.error || job.message || "Evaluation job started.", job.state === "failed");
   if (resetEvents) {
@@ -335,6 +362,7 @@ function connectRunner(jobId) {
 async function loadEvaluationCapabilities() {
   const capabilities = await jsonRequest("/api/evaluation-jobs/capabilities");
   runner.capabilities = capabilities;
+  renderEvaluationTopologies(capabilities.topologies);
   requiredAcknowledgement.textContent = capabilities.acknowledgement;
   acknowledgementInput.placeholder = capabilities.acknowledgement;
   if (capabilities.active_job_id && (!runner.job || runner.job.job_id !== capabilities.active_job_id)) {
@@ -355,7 +383,7 @@ async function startEvaluation(kind) {
   try {
     const payload = {
       kind,
-      config_id: "c1_single",
+      config_id: evaluationTopology.value,
       case_ids: [],
     };
     if (kind === "deterministic") payload.acknowledgement = acknowledgementInput.value;

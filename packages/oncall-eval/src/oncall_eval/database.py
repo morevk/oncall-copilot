@@ -286,20 +286,38 @@ class EvaluationDatabase:
                 """
                 SELECT r.run_id, r.case_id, r.fault_id, r.config_id, r.complexity,
                        r.passed, r.tool_calls, r.latency_ms, r.artifact_modified_ns,
+                       json_extract(r.record_json, '$.source_incident_id')
+                           AS source_incident_id,
+                       json_extract(r.record_json, '$.error') AS run_error,
                        s.total_score AS rubric_score
                 FROM evaluation_runs AS r
                 LEFT JOIN rubric_scores AS s ON s.run_id = r.run_id
                 ORDER BY r.artifact_modified_ns DESC
                 """
             ).fetchall()
-        return [
-            dict(row)
-            | {
-                "passed": bool(row["passed"]),
-                "rubric_max": 35,
-            }
-            for row in rows
-        ]
+        results = []
+        seen_incidents: set[str] = set()
+        for row in rows:
+            source_incident_id = row["source_incident_id"]
+            superseded = bool(source_incident_id and source_incident_id in seen_incidents)
+            if source_incident_id:
+                seen_incidents.add(source_incident_id)
+            results.append(
+                dict(row)
+                | {
+                    "passed": bool(row["passed"]),
+                    "evaluation_mode": (
+                        "superseded"
+                        if superseded
+                        else "retrospective"
+                        if source_incident_id
+                        else ("error" if row["run_error"] else "live")
+                    ),
+                    "superseded": superseded,
+                    "rubric_max": 35,
+                }
+            )
+        return results
 
     def get_run(self, run_id: str) -> tuple[dict[str, Any], dict[str, Any] | None]:
         with self._connect() as connection:
@@ -314,6 +332,19 @@ class EvaluationDatabase:
             ).fetchone()
         run = json.loads(run_row["record_json"])
         run["artifact_modified_ns"] = run_row["artifact_modified_ns"]
+        source_incident_id = run.get("source_incident_id")
+        run["superseded"] = False
+        if isinstance(source_incident_id, str):
+            with self._connect() as connection:
+                newest = connection.execute(
+                    """
+                    SELECT run_id FROM evaluation_runs
+                    WHERE json_extract(record_json, '$.source_incident_id') = ?
+                    ORDER BY artifact_modified_ns DESC, run_id DESC LIMIT 1
+                    """,
+                    (source_incident_id,),
+                ).fetchone()
+            run["superseded"] = newest is not None and newest["run_id"] != run_id
         rubric = None
         if rubric_row is not None:
             rubric = json.loads(rubric_row["record_json"])
@@ -324,18 +355,67 @@ class EvaluationDatabase:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT config_id, COUNT(*) AS runs, SUM(passed) AS passed,
-                       AVG(tool_calls) AS average_tool_calls,
-                       AVG(latency_ms) AS average_latency_ms
-                FROM evaluation_runs
-                GROUP BY config_id
+                SELECT r.config_id, COUNT(*) AS runs, SUM(r.passed) AS passed,
+                       AVG(r.tool_calls) AS average_tool_calls,
+                       AVG(r.tokens) AS average_tokens,
+                       AVG(r.usd) AS average_usd,
+                       AVG(r.latency_ms) AS average_latency_ms,
+                       AVG(json_extract(r.record_json, '$.execution_trace.model_calls'))
+                           AS average_model_calls,
+                       AVG(json_extract(r.record_json, '$.execution_trace.largest_prompt_tokens'))
+                           AS average_largest_prompt_tokens,
+                       AVG(s.total_score) AS average_rubric_score
+                FROM evaluation_runs AS r
+                LEFT JOIN rubric_scores AS s ON s.run_id = r.run_id
+                WHERE json_extract(r.record_json, '$.source_incident_id') IS NULL
+                  AND json_extract(r.record_json, '$.error') IS NULL
+                GROUP BY r.config_id
                 """
             ).fetchall()
             totals = connection.execute(
                 """
-                SELECT COUNT(*) AS total_runs, COALESCE(SUM(passed), 0) AS passed,
-                       (SELECT COUNT(*) FROM rubric_scores) AS rubric_scored
+                SELECT COUNT(*) AS total_runs,
+                       COUNT(*) FILTER (
+                           WHERE json_extract(record_json, '$.source_incident_id') IS NULL
+                              AND json_extract(record_json, '$.error') IS NULL
+                       ) AS scored_runs,
+                       COUNT(*) FILTER (
+                           WHERE json_extract(record_json, '$.source_incident_id') IS NULL
+                             AND json_extract(record_json, '$.error') IS NOT NULL
+                       ) AS errored_runs,
+                       COUNT(*) FILTER (
+                           WHERE json_extract(record_json, '$.source_incident_id') IS NOT NULL
+                       ) AS retrospective_runs,
+                       COALESCE(SUM(passed) FILTER (
+                           WHERE json_extract(record_json, '$.source_incident_id') IS NULL
+                             AND json_extract(record_json, '$.error') IS NULL
+                       ), 0) AS passed,
+                       0 AS unused
                 FROM evaluation_runs
+                """
+            ).fetchone()
+            rubric_totals = connection.execute(
+                """
+                WITH ranked AS (
+                    SELECT run_id, record_json,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY COALESCE(
+                                   json_extract(record_json, '$.source_incident_id'),
+                                   'run:' || run_id
+                               )
+                               ORDER BY artifact_modified_ns DESC, run_id DESC
+                           ) AS attempt_rank
+                    FROM evaluation_runs
+                )
+                SELECT COUNT(*) FILTER (
+                           WHERE json_extract(r.record_json, '$.error') IS NULL
+                       ) AS rubric_eligible,
+                       COUNT(s.run_id) FILTER (
+                           WHERE json_extract(r.record_json, '$.error') IS NULL
+                       ) AS rubric_scored
+                FROM ranked AS r
+                LEFT JOIN rubric_scores AS s ON s.run_id = r.run_id
+                WHERE r.attempt_rank = 1
                 """
             ).fetchone()
         grouped = {row["config_id"]: dict(row) for row in rows}
@@ -351,17 +431,29 @@ class EvaluationDatabase:
                     "passed": passed,
                     "pass_rate": passed / runs if runs else None,
                     "average_tool_calls": values["average_tool_calls"] if values else None,
+                    "average_tokens": values["average_tokens"] if values else None,
+                    "average_usd": values["average_usd"] if values else None,
                     "average_latency_ms": values["average_latency_ms"] if values else None,
+                    "average_model_calls": values["average_model_calls"] if values else None,
+                    "average_largest_prompt_tokens": (
+                        values["average_largest_prompt_tokens"] if values else None
+                    ),
+                    "average_rubric_score": values["average_rubric_score"] if values else None,
                 }
             )
         total_runs = int(totals["total_runs"])
+        scored_runs = int(totals["scored_runs"])
         passed = int(totals["passed"])
         return {
             "total_runs": total_runs,
+            "scored_runs": scored_runs,
+            "retrospective_runs": int(totals["retrospective_runs"]),
+            "errored_runs": int(totals["errored_runs"]),
             "passed": passed,
-            "failed": total_runs - passed,
-            "pass_rate": passed / total_runs if total_runs else None,
-            "rubric_scored": int(totals["rubric_scored"]),
+            "failed": scored_runs - passed,
+            "pass_rate": passed / scored_runs if scored_runs else None,
+            "rubric_eligible": int(rubric_totals["rubric_eligible"]),
+            "rubric_scored": int(rubric_totals["rubric_scored"]),
             "by_config": by_config,
         }
 

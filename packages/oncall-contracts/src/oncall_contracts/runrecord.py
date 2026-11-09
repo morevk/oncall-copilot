@@ -10,6 +10,29 @@ from typing import NotRequired, TypedDict
 from .config import Complexity, Topology
 
 
+class AgentExecution(TypedDict):
+    """Sanitized usage for one named agent; no prompts or hidden reasoning."""
+
+    model_calls: int
+    tool_calls: int
+    input_tokens: int
+    output_tokens: int
+    largest_prompt_tokens: int
+    latency_ms: int
+    model_id: str
+
+
+class ExecutionTrace(TypedDict):
+    """Observable orchestration facts shared by C1 and C2."""
+
+    model_calls: int
+    largest_prompt_tokens: int
+    agents: dict[str, AgentExecution]
+    graph_path: list[str]
+    replans: int
+    rollbacks: int
+
+
 class RunRecord(TypedDict):
     run_id: str
     case_id: str
@@ -46,6 +69,8 @@ class RunRecord(TypedDict):
 
     # Provenance, so a result can be tied to what produced it.
     model_ids: dict[str, str]
+    tool_budget: NotRequired[int]
+    execution_trace: NotRequired[ExecutionTrace]
     playbook_hash: NotRequired[str | None]
     error: NotRequired[str | None]
     source_incident_id: NotRequired[str]

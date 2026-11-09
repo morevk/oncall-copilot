@@ -207,7 +207,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--prometheus-url",
-        default=os.environ.get("PROMETHEUS_URL", "http://10.241.2.69:9090"),
+        default=os.environ.get("PROMETHEUS_URL", "http://localhost:9090"),
     )
     parser.add_argument(
         "--flagd-config",

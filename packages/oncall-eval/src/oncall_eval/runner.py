@@ -205,6 +205,55 @@ def validate_system_run(run: SystemRun) -> None:
         raise TypeError("playbook_hash must be a string or null")
     if run.get("error") is not None and not isinstance(run["error"], str):
         raise TypeError("error must be a string or null")
+    if run.get("execution_trace") is not None:
+        _validate_execution_trace(run["execution_trace"])
+
+
+def _validate_execution_trace(trace: object) -> None:
+    if not isinstance(trace, dict):
+        raise TypeError("execution_trace must be an object")
+    required = {
+        "model_calls",
+        "largest_prompt_tokens",
+        "agents",
+        "graph_path",
+        "replans",
+        "rollbacks",
+    }
+    if set(trace) != required:
+        raise ValueError(f"execution_trace must contain exactly {sorted(required)}")
+    for field in ("model_calls", "largest_prompt_tokens", "replans", "rollbacks"):
+        value = trace[field]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise TypeError(f"execution_trace.{field} must be a non-negative integer")
+    path = trace["graph_path"]
+    if not isinstance(path, list) or any(not isinstance(name, str) for name in path):
+        raise TypeError("execution_trace.graph_path must be a list of strings")
+    agents = trace["agents"]
+    if not isinstance(agents, dict):
+        raise TypeError("execution_trace.agents must be an object")
+    metric_fields = {
+        "model_calls",
+        "tool_calls",
+        "input_tokens",
+        "output_tokens",
+        "largest_prompt_tokens",
+        "latency_ms",
+        "model_id",
+    }
+    for name, metrics in agents.items():
+        if not isinstance(name, str) or not name or not isinstance(metrics, dict):
+            raise TypeError("execution_trace agents must map non-empty names to objects")
+        if set(metrics) != metric_fields:
+            raise ValueError(f"execution_trace agent {name!r} has invalid fields")
+        for field in metric_fields - {"model_id"}:
+            value = metrics[field]
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise TypeError(
+                    f"execution_trace.agents.{name}.{field} must be a non-negative integer"
+                )
+        if not isinstance(metrics["model_id"], str):
+            raise TypeError(f"execution_trace.agents.{name}.model_id must be a string")
 
 
 def _validate_action(action: object, field: str) -> None:
@@ -228,6 +277,7 @@ def build_run_record(
     latency_ms: int,
     observation: ObservedFault | None,
     source_incident_id: str | None = None,
+    tool_budget: int | None = None,
 ) -> RunRecord:
     record: RunRecord = {
         "run_id": run_id,
@@ -256,8 +306,11 @@ def build_run_record(
         "passed": score.passed,
         "failure_reasons": list(score.reasons),
         "model_ids": dict(output["model_ids"]),
+        "tool_budget": (case["expected"]["max_tool_calls"] if tool_budget is None else tool_budget),
         "playbook_hash": output.get("playbook_hash"),
     }
+    if output.get("execution_trace") is not None:
+        record["execution_trace"] = output["execution_trace"]
     if output.get("error"):
         record["error"] = output["error"]
     if source_incident_id is not None:
@@ -385,4 +438,14 @@ def validate_run_record(value: object) -> list[str]:
         not isinstance(source_incident_id, str) or not source_incident_id
     ):
         problems.append("source_incident_id must be a non-empty string")
+    tool_budget = value.get("tool_budget")
+    if tool_budget is not None and (
+        isinstance(tool_budget, bool) or not isinstance(tool_budget, int) or tool_budget <= 0
+    ):
+        problems.append("tool_budget must be a positive integer")
+    if value.get("execution_trace") is not None:
+        try:
+            _validate_execution_trace(value["execution_trace"])
+        except (TypeError, ValueError) as exc:
+            problems.append(str(exc))
     return problems

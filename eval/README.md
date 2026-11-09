@@ -1,10 +1,10 @@
 # Evaluation and Red-Team Strategy
 
 **Owner:** P4 — Evaluation and Red Team  
-**Status:** The deterministic C1 harness, read-only dashboard, exploratory LLM judge, and
-Control Center triggers are implemented. Golden evidence bundles, human calibration, the
-red-team corpus, and the held-out corpus are pending. The incident API advertises
-`c1_single` only.
+**Status:** The deterministic C1/C2 harness, topology-aware execution measurements, read-only
+dashboard, exploratory LLM judge, and Control Center triggers are implemented. Golden evidence
+bundles, human calibration, the red-team corpus, and the held-out corpus are pending. The incident API advertises
+`c1_single` and `c2_team`; `c0_workflow` remains unavailable.
 
 This directory owns the ground truth used to evaluate the On-Call Copilot. The evaluator drives
 the system through its public HTTP API and must never import `oncall_graph` or expose the answers
@@ -425,8 +425,8 @@ Report deterministic and rubric results side by side:
 | C1 | | | | | | | |
 | C2 | | | | | | | |
 
-Only `c1_single` can be filled from a live run today. C0 and C2 stay in the table because the
-comparison still needs all three once the incident API advertises them.
+`c1_single` and `c2_team` can be filled from live runs today. C0 stays in the table because the
+comparison still needs all three once the incident API implements it.
 
 Also stratify by:
 
@@ -455,8 +455,8 @@ For each case:
 1. Capture healthy, faulted, and recovered telemetry.
 2. Label decisive, supporting, irrelevant, and missing evidence.
 3. Write a short human-approved investigation outline.
-4. Run C1 now. Run C2 under the same tools and budgets once the incident API advertises
-   `c2_team`. A C0 or C2 live run currently fails before injection.
+4. Run C1 and C2 under the same tools, total tool-call budget, fault, and model settings.
+   A C0 live run currently fails before injection.
 5. Produce deterministic results.
 6. Have at least two humans apply the 0–5 rubric.
 7. Resolve rubric ambiguity and improve the anchors.
@@ -474,6 +474,8 @@ held-out corpus.
 make eval-fixture                         # replay committed fixtures; no model, no injection
 make eval-preflight                       # check the live lab without changing it
 make eval-live-dev ACK_LIVE_FAULTS=yes    # inject the development fault and score it
+make eval-preflight CONFIG=c2_team        # check the C2 team path
+make eval-live-dev CONFIG=c2_team ACK_LIVE_FAULTS=yes
 make eval-judge RUN_ID=<completed-run-id> # exploratory rubric for one saved run
 make eval-dashboard                       # host process at 127.0.0.1:8030
 ```
@@ -499,16 +501,15 @@ Preflight does not require it.
 
 ```text
 ONCALL_SERVICE_URL       default http://localhost:8000
-PROMETHEUS_URL           harness default http://10.241.2.69:9090
+PROMETHEUS_URL           default http://localhost:9090
 FLAGD_CONFIG             default deploy/flagd/demo.flagd.json
 ONCALL_EVAL_RUNS         default artifacts/runs
 ONCALL_EVAL_LOCK_FILE    default artifacts/locks/live-evaluation.lock
 ```
 
-Set `PROMETHEUS_URL` in `.env` before a host-side live run. The harness default is a NodePort
-address from a cluster that is not this shop. Compose sets `http://prometheus:9090`. The
-Control Center job runner defaults to `http://127.0.0.1:9090` when the variable is unset.
-`make eval-live-dev` loads `.env`, so a correct file hides the harness default.
+Compose sets `PROMETHEUS_URL=http://prometheus:9090`. Host-side CLI runs use the published
+`http://localhost:9090` endpoint when the variable is unset. The Control Center job runner uses
+`http://127.0.0.1:9090` outside Compose.
 
 `make eval-judge` also reads `OPENROUTER_API_KEY` and `JUDGE_MODEL`. It fetches the incident
 from `ONCALL_SERVICE_URL` and refuses a judge whose provider family matches the evaluated
@@ -543,16 +544,16 @@ packages/oncall-eval/src/oncall_eval/
   dashboard/          read-only HTTP API and UI
 
 packages/oncall-lab/src/oncall_lab/
-  evaluation_jobs.py  one preflight or one c1_single live run
+  evaluation_jobs.py  one C1/C2 preflight or live run
   batch_jobs.py       one batch over saved incidents
 ```
 
-### Live C1 path
+### Live C1/C2 path
 
 Preflight checks the global lock, `GET /healthz`, `GET /api/evaluation-capabilities`, both
-Prometheus queries, and the disabled flag baseline. The capability response must advertise
-`c1_single`, `exact-action-payload-hash`, and SystemRun contract `v1`. `c0_workflow` and
-`c2_team` fail before injection.
+Prometheus queries, and the disabled flag baseline. The capability response must advertise the
+selected `c1_single` or `c2_team` topology, `exact-action-payload-hash`, and SystemRun contract
+`v1`. `c0_workflow` fails before injection.
 
 The lock at `artifacts/locks/live-evaluation.lock` is an `fcntl` exclusive lock taken
 non-blocking. A second live run raises `LiveEvaluationLocked` and names the current owner.
@@ -576,6 +577,11 @@ The HTTP client never receives permission to approve an arbitrary proposal. The 
 EvalCase passes its expected action to the evaluator-side client only. That answer is not
 included in the alert or any request the agent sees.
 
+In the Compose/MCP path, the code-owned remediation nodes execute approved `set_flag` and
+`rollback_flag` calls through the ops-actions server and verify recovery through the telemetry
+server. A successful write is not recovery evidence. Missing, malformed, `NaN`, or infinite
+Prometheus samples fail the recovery check instead of being converted to zero.
+
 ### Control Center
 
 `http://localhost:8020/` has two evaluation controls. A running Compose lab shows them after
@@ -590,7 +596,8 @@ GET  /api/evaluation-jobs/{job_id}
 GET  /api/evaluation-jobs/{job_id}/stream
 ```
 
-Accepted kinds are `preflight` and `deterministic`. The only topology is `c1_single`.
+Accepted kinds are `preflight` and `deterministic`. The selectable topologies are `c1_single`
+and `c2_team`.
 `judge_available` is false: this API does not start the LLM judge. A deterministic body must
 include `acknowledgement` equal to `INJECT LIVE FAULTS`. Progress is that job's SSE stream.
 The report link is `http://127.0.0.1:8030/?run=<run-id>`, and the dashboard selects that run
@@ -642,6 +649,11 @@ file, flushes, calls `fsync`, then `os.link`s it into place. Link creation fails
 final path already exists, so a completed artifact is not overwritten. The dashboard sees a
 complete record or no record.
 
+`RunRecord.execution_trace` stores sanitized orchestration measurements: node path, role-level
+model/tool calls, token counts, latency, largest prompt, replans, and rollbacks. It stores no
+prompts, model replies, tool results, or hidden reasoning. The LLM judge is deliberately blinded
+to this topology and cost metadata so C1/C2 quality scores use the same observable evidence.
+
 `evaluation.sqlite3` is a rebuildable index over those JSON files. Deleting it and restarting
 the dashboard reconstructs it. Tables:
 
@@ -663,8 +675,9 @@ GET /
 ```
 
 There is no dashboard SSE route. The page polls every five seconds. `?run=<run-id>` selects
-that run on the first load. The tabs are Overview, Deterministic, Rubric, and Timeline. The
-overview keeps the two tracks side by side and does not blend them. The timeline is the
+that run on the first load. The tabs are Overview, Deterministic, Rubric, Execution, and
+Timeline. The overview keeps the two tracks side by side and does not blend them. The summary
+compares C1/C2 pass rate, rubric mean, tools, model calls, tokens, and latency. The timeline is the
 witness order already stored on the `RunRecord`. It does not invent lifecycle timestamps. A
 missing rubric renders `Awaiting evaluation`, never `0/35`.
 
@@ -690,7 +703,7 @@ read-write because the SQLite index is written there. `ONCALL_EVAL_DASHBOARD_HOS
 - Result aggregation and confidence intervals.
 - A frozen held-out corpus. `eval/heldout/` is empty, and scoring it requires
   `--allow-heldout`.
-- `c0_workflow` and `c2_team` on `GET /api/evaluation-capabilities`.
+- `c0_workflow` on `GET /api/evaluation-capabilities`.
 - A live-run queue. A second live run fails immediately.
 - Dashboard SSE, and lifecycle timestamps beyond the witness sequence.
 

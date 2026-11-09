@@ -19,11 +19,10 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from oncall_contracts.config import Topology
 from oncall_contracts.state import Alert
-from oncall_graph.astronomy_shop import LiveShop
+from oncall_graph.astronomy_shop import LiveShop, RegistryShop
 from oncall_graph.build import open_tools, tools_requested
 from oncall_graph.config import DEFAULT_TOOL_BUDGET, LIVE_TOOL_BUDGET
 from oncall_graph.nodes.remediate import command_payload, payload_hash
-from oncall_graph.stubs import Shop
 from oncall_graph.topologies.c1_single import Solo, interrupt_value
 from oncall_graph.topologies.c2_team import Team
 from oncall_memory import LessonStore
@@ -276,11 +275,54 @@ def _system_run(incident: Incident, raw: dict[str, Any]) -> dict[str, Any]:
         "usd": 0.0,
         "verified_recovery": bool((raw.get("verification") or {}).get("recovered")),
         "rolled_back": any(
-            isinstance(item, dict) and item.get("tool") == "rollback" for item in writes
+            isinstance(item, dict) and item.get("tool") == "rollback_flag" for item in writes
         ),
         "model_ids": model_ids,
+        "execution_trace": _execution_trace(raw),
         "playbook_hash": _playbook_hash(incident),
         "error": incident.error,
+    }
+
+
+def _execution_trace(raw: dict[str, Any]) -> dict[str, Any]:
+    """Expose orchestration measurements without prompts, replies, or tool results."""
+    rows = [item for item in (raw.get("meter_rows") or []) if isinstance(item, dict)]
+    agents: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        name = str(row.get("agent") or "agent")
+        slot = agents.setdefault(
+            name,
+            {
+                "model_calls": 0,
+                "tool_calls": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "largest_prompt_tokens": 0,
+                "latency_ms": 0,
+                "model_id": "",
+            },
+        )
+        input_tokens = max(0, int(row.get("input_tokens") or 0))
+        output_tokens = max(0, int(row.get("output_tokens") or 0))
+        invoked = row.get("tools_invoked")
+        slot["model_calls"] += 1
+        slot["tool_calls"] += len(invoked) if isinstance(invoked, list) else 0
+        slot["input_tokens"] += input_tokens
+        slot["output_tokens"] += output_tokens
+        slot["largest_prompt_tokens"] = max(slot["largest_prompt_tokens"], input_tokens)
+        slot["latency_ms"] += max(0, round(float(row.get("seconds") or 0) * 1000))
+        if row.get("model_id"):
+            slot["model_id"] = str(row["model_id"])
+    path = [str(name) for name in (raw.get("graph_path") or [])]
+    return {
+        "model_calls": len(rows),
+        "largest_prompt_tokens": max(
+            (int(row.get("input_tokens") or 0) for row in rows), default=0
+        ),
+        "agents": agents,
+        "graph_path": path,
+        "replans": path.count("replan"),
+        "rollbacks": path.count("rollback"),
     }
 
 
@@ -493,13 +535,11 @@ def _playbook_hash(incident: Incident) -> str | None:
 def _open_runner(incident: Incident, tools=None) -> Solo | Team:
     """The same instance must resume, because its checkpointer holds the pause.
 
-    A registry is what the model reads. apply and verify still use the
-    scripted shop inside the runner; those two calls are not this seam.
+    With a registry, model reads, approved writes, and recovery verification
+    all cross MCP. The same adapter retains the write audit used by run records.
     """
     if tools is not None:
-        # Reads come from the registry. The shop is only what apply and
-        # verify still call, and what the run record's write list is read from.
-        shop = Shop()
+        shop = RegistryShop(tools)
         if incident.config_id == "c1_single":
             return Solo(shop=shop, tools=tools, tool_budget=incident.tool_budget)
         if incident.config_id == "c2_team":

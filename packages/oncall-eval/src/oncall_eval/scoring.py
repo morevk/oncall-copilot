@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import NotRequired, TypedDict
 
 from oncall_contracts.faults import FaultAction
+from oncall_contracts.runrecord import ExecutionTrace
 
 from .cases import EvalCase
 
@@ -23,6 +24,7 @@ class SystemRun(TypedDict):
     verified_recovery: bool
     rolled_back: bool
     model_ids: dict[str, str]
+    execution_trace: NotRequired[ExecutionTrace]
     playbook_hash: NotRequired[str | None]
     error: NotRequired[str | None]
 

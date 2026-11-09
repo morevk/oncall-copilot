@@ -126,6 +126,24 @@ class PassingSystem:
             "verified_recovery": True,
             "rolled_back": False,
             "model_ids": {"solo": "test-model"},
+            "execution_trace": {
+                "model_calls": 2,
+                "largest_prompt_tokens": 4000,
+                "agents": {
+                    "solo": {
+                        "model_calls": 2,
+                        "tool_calls": 4,
+                        "input_tokens": 7000,
+                        "output_tokens": 1120,
+                        "largest_prompt_tokens": 4000,
+                        "latency_ms": 200,
+                        "model_id": "test-model",
+                    }
+                },
+                "graph_path": ["input_guard_stub", "solo", "approval", "verify"],
+                "replans": 0,
+                "rollbacks": 0,
+            },
             "playbook_hash": None,
         }
 
@@ -192,6 +210,8 @@ def test_runner_executes_scores_and_persists_one_record(tmp_path: Path):
     assert result.record["within_tool_budget"]
     assert result.record["passed"]
     assert result.record["failure_reasons"] == []
+    assert result.record["tool_budget"] == 5
+    assert result.record["execution_trace"]["agents"]["solo"]["tool_calls"] == 4
     assert result.artifact_path == tmp_path / "runs" / "run-001.json"
     assert load_run_record(result.artifact_path) == result.record
     assert system.received == (

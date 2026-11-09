@@ -583,6 +583,26 @@ def test_every_mcp_server_has_a_compose_service_and_a_verify_line() -> None:
     assert not missing, "a server that nothing checks:\n  " + "\n  ".join(missing)
 
 
+def test_oncall_service_waits_for_every_mcp_server_to_be_healthy() -> None:
+    """The service opens the complete MCP registry during its lifespan startup.
+
+    `service_started` only means Docker created the server process. Without a
+    healthy dependency, a clean `make up` can race the MCP port binding: the
+    incident service exits on connection refused and Compose fails the whole
+    dependency chain before its restart policy repairs it.
+    """
+    import yaml
+
+    compose = yaml.safe_load((ROOT / "deploy" / "compose.oncall.yaml").read_text(encoding="utf-8"))
+    dependencies = compose["services"]["oncall-service"]["depends_on"]
+
+    from oncall_tools.registry import SERVERS
+
+    for name in SERVERS:
+        service = f"mcp-{name.replace('_', '-')}"
+        assert dependencies.get(service) == {"condition": "service_healthy"}
+
+
 def test_every_service_we_define_restarts_with_the_docker_daemon() -> None:
     """`deploy/compose.oncall.yaml` states this rule in a comment:
 

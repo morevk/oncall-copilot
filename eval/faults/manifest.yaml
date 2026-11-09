@@ -28,8 +28,10 @@ faults:
         / (sum(rate(http_server_request_duration_seconds_count{
         service_name="frontend",http_response_status_code="422"}[5m]))
         + sum(rate(demo_payment_transactions_total[5m])))
-      operator: ">="
-      threshold: 0.5
+      # Match the production Grafana rule. A previous 0.50 threshold made the
+      # evaluator wait forever on incidents that were already paging at 0.05.
+      operator: ">"
+      threshold: 0.05
     recovery:
       query: >-
         sum(rate(demo_payment_transactions_total[5m]))

@@ -7,9 +7,15 @@ while its writes stay scripted.
 """
 
 import pytest
-from oncall_graph.astronomy_shop import AstronomyShop, LiveShop, TelemetryNotConfigured
+from oncall_graph.astronomy_shop import (
+    AstronomyShop,
+    LiveShop,
+    RegistryShop,
+    TelemetryNotConfigured,
+)
 from oncall_graph.stubs import Shop
 from oncall_graph.topologies.c1_single import Solo
+from oncall_tools.registry import ToolRegistry, ToolSpec
 
 
 class _Silent:
@@ -55,3 +61,45 @@ def test_live_shop_without_the_three_urls_refuses_rather_than_guessing(monkeypat
         monkeypatch.delenv(name, raising=False)
     with pytest.raises(TelemetryNotConfigured):
         LiveShop()
+
+
+def _spec(name, result, *, write=False):
+    return ToolSpec(
+        name=name,
+        description=name,
+        schema={},
+        write=write,
+        server="ops_actions" if write else "telemetry",
+        invoke=lambda _args: result,
+    )
+
+
+def test_registry_shop_executes_and_audits_the_approved_mcp_write():
+    result = {"previous": "100%", "variant": "off", "changed": True}
+    shop = RegistryShop(ToolRegistry([_spec("set_flag", result, write=True)]))
+
+    assert shop.apply("set_flag", {"flag": "paymentFailure", "variant": "off"}) == result
+    assert shop.writes == [
+        {"tool": "set_flag", "args": {"flag": "paymentFailure", "variant": "off"}}
+    ]
+
+
+def test_registry_shop_verifies_recovery_from_prometheus_series():
+    registry = ToolRegistry([_spec("promql", {"series": [{"metric": {}, "value": [0, "0.01"]}]})])
+
+    assert RegistryShop(registry).metrics()["error_rate"] == 0.01
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {"series": []},
+        {"series": [{"metric": {}, "value": [0, "NaN"]}]},
+        {"series": [{"metric": {}, "value": None}]},
+    ],
+)
+def test_registry_shop_does_not_treat_missing_recovery_evidence_as_healthy(result):
+    shop = RegistryShop(ToolRegistry([_spec("promql", result)]))
+
+    with pytest.raises(RuntimeError):
+        shop.metrics()

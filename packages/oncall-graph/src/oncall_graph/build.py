@@ -12,6 +12,7 @@ from langgraph.graph.state import CompiledStateGraph
 from oncall_contracts.config import Topology
 from oncall_tools.registry import TRANSPORT_ENV, ToolRegistry, load_tools
 
+from .astronomy_shop import RegistryShop
 from .config import DEFAULT_MAX_REVISIONS, DEFAULT_TOOL_BUDGET
 from .stubs import Shop
 from .topologies.c1_single import Solo
@@ -53,8 +54,8 @@ def build_graph(
     """Compile ``topology``.
 
     ``tools`` is the injected tool bundle. ``None`` or ``{}`` selects the
-    scripted shop. A ``ToolRegistry`` supplies the reads it actually has;
-    apply and verify still use a scripted shop. Any other value is refused.
+    scripted shop. A ``ToolRegistry`` supplies reads plus the code-owned,
+    post-approval write and recovery paths. Any other value is refused.
     ``store`` is the lesson store the runbook step filters.
     ``c1_single`` does not read it. ``model`` is a ready-made chat model.
     Omit it and an agent builds its OpenRouter client, which needs
@@ -66,9 +67,7 @@ def build_graph(
     if topology in ("c1_single", "c2_team"):
         registry = None
         if isinstance(tools, ToolRegistry):
-            # Reads come from the registry. The shop remains for apply,
-            # verify, and rollback until those call the write server.
-            shop = Shop()
+            shop = RegistryShop(tools)
             registry = tools
         elif isinstance(tools, Shop):
             shop = tools
