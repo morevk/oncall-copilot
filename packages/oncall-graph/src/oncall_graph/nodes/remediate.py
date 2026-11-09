@@ -144,7 +144,43 @@ def approval(state):
         continue
 
 
-def execute_action_code(state, shop):
+def apply_through(shop, tool, args, tools=None) -> dict:
+    """Run one approved write.
+
+    A registry that has the tool is the shop: ``set_flag`` and ``rollback_flag``
+    run in ``mcp-ops-actions``, which holds the flagd document. The scripted
+    ``Shop.apply`` remains for a graph built without that registry. The returned
+    variant is copied onto ``shop.flags`` so ``verify_metrics`` does not roll
+    back a write that landed; ``LiveShop.armed`` does not trust that copy.
+    """
+    clean = dict(args or {})
+    if tools is not None and tool in tools:
+        invoke = getattr(tools[tool], "invoke", None)
+        if not callable(invoke):
+            raise TypeError(f"{tool} has no invoke")
+        reported = invoke(clean)
+        if not isinstance(reported, dict):
+            raise TypeError(f"{tool} returned {type(reported).__name__}")
+        result = {
+            "ok": True,
+            "tool": tool,
+            "args": clean,
+            "flag": reported.get("flag", clean.get("flag")),
+            "variant": reported.get("variant", clean.get("variant")),
+            "previous": reported.get("previous"),
+            "changed": reported.get("changed"),
+        }
+        if hasattr(shop, "writes"):
+            shop.writes.append({"tool": tool, "args": clean})
+        flag = result.get("flag")
+        variant = result.get("variant")
+        if hasattr(shop, "flags") and isinstance(flag, str) and isinstance(variant, str):
+            shop.flags[flag] = variant
+        return result
+    return shop.apply(tool, clean)
+
+
+def execute_action_code(state, shop, tools=None):
     """Run the approved command. A different hash does not touch the shop."""
     action = state.get("proposed_action") or {}
     if not action:
@@ -162,7 +198,7 @@ def execute_action_code(state, shop):
             "why": "approval hash does not match the command",
             "transcript": transcript_lines("execute", "execute refused"),
         }
-    result = shop.apply(action["action"], action["args"])
+    result = apply_through(shop, action["action"], action["args"], tools)
     plan = dict(state.get("plan") or {})
     plan["stage"] = "verify"
     return {
@@ -200,11 +236,11 @@ def verify_metrics(state, shop):
     }
 
 
-def rollback_code(state, shop):
+def rollback_code(state, shop, tools=None):
     """Apply the inverse action in code. A prose rollback is recorded, not shelled."""
     pending = code_rollback(state)
     if pending.get("tool"):
-        result = shop.apply(pending["tool"], pending.get("args") or {})
+        result = apply_through(shop, pending["tool"], pending.get("args") or {}, tools)
     else:
         result = {"ok": False, "skipped": True}
     return {

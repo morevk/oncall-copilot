@@ -8,6 +8,7 @@ from oncall_graph.nodes.remediate import (
     command_payload,
     execute_action_code,
     payload_hash,
+    rollback_code,
     verify_metrics,
 )
 from oncall_graph.planning.plan import ACTION_TOOLS, READ_TOOLS, format_plan
@@ -283,6 +284,54 @@ def test_an_edit_interrupts_again_and_the_old_hash_does_not_run():
     assert solo.shop.writes[1]["tool"] == "rollback_flag"
     assert solo.shop.flags["paymentFailure"] == "100%"
     assert "rollback" in texts(done)
+
+
+class _Write:
+    def __init__(self, previous):
+        self.previous = previous
+        self.calls = []
+
+    def invoke(self, args):
+        self.calls.append(dict(args))
+        return {
+            "flag": args["flag"],
+            "variant": args["variant"],
+            "previous": self.previous,
+            "changed": True,
+        }
+
+
+class _Registry:
+    def __init__(self):
+        self.set_flag = _Write("100%")
+        self.rollback_flag = _Write("off")
+
+    def __contains__(self, name):
+        return name in {"set_flag", "rollback_flag"}
+
+    def __getitem__(self, name):
+        return getattr(self, name)
+
+
+def test_execute_and_rollback_call_the_registry_tools_not_the_fixture():
+    """The service's shop is the in-memory fixture. The write has to be the tool."""
+    registry = _Registry()
+    shop = Shop()
+    accepted = new_incident(plan={"stage": "act"}, proposed_action=PAYMENT_ACTION)
+    accepted["approval_payload_hash"] = payload_hash(command_payload(PAYMENT_ACTION))
+    ran = execute_action_code(accepted, shop, registry)
+
+    assert registry.set_flag.calls == [{"flag": "paymentFailure", "variant": "off"}]
+    assert ran["last"]["result"]["previous"] == "100%"
+    assert shop.writes[0]["tool"] == "set_flag"
+    assert shop.flags["paymentFailure"] == "off"
+
+    state = dict(accepted)
+    state.update(ran)
+    rolled = rollback_code(state, shop, registry)
+    assert registry.rollback_flag.calls == [{"flag": "paymentFailure", "variant": "100%"}]
+    assert rolled["pending_rollback"]["tool"] == "rollback_flag"
+    assert shop.flags["paymentFailure"] == "100%"
 
 
 def test_failed_verification_rolls_back_then_replans():

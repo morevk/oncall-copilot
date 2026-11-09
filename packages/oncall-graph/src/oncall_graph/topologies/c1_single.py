@@ -282,13 +282,13 @@ class Solo:
         }
 
     def execute(self, state):
-        return execute_action_code(state, self.shop)
+        return execute_action_code(state, self.shop, self.tools)
 
     def verify(self, state):
         return verify_metrics(state, self.shop)
 
     def rollback(self, state):
-        return rollback_code(state, self.shop)
+        return rollback_code(state, self.shop, self.tools)
 
     def run(self, alert="", *, incident_id="incident", resume=None):
         """Run or resume. The meter covers this call, including the solo model calls inside it."""

@@ -3,13 +3,19 @@
 The client's own tests moved with it, to
 `packages/oncall-tools/tests/test_telemetry.py`. What is left here is the part
 that is P2's: that `Solo` defaults to the stub, and that `LiveShop` reads live
-while its writes stay scripted.
+and writes the flagd document through `set_flag` and `rollback_flag`.
 """
+
+import json
+from pathlib import Path
 
 import pytest
 from oncall_graph.astronomy_shop import AstronomyShop, LiveShop, TelemetryNotConfigured
 from oncall_graph.stubs import Shop
 from oncall_graph.topologies.c1_single import Solo
+from oncall_tools.servers.ops_actions import FLAG_PATH_ENV
+
+BASELINE = Path(__file__).resolve().parents[3] / "deploy" / "flagd" / "demo.flagd.json"
 
 
 class _Silent:
@@ -28,18 +34,34 @@ def test_default_solo_shop_is_the_stub(capsys):
     assert "astronomy shop" not in logged
 
 
-def test_live_shop_reads_telemetry_and_keeps_stub_writes(monkeypatch, capsys):
+def test_live_shop_reads_telemetry_and_writes_the_document(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(
         AstronomyShop,
         "promql",
         lambda self, query: {"query": query, "series": []},
     )
+    document = tmp_path / "demo.flagd.json"
+    content = json.loads(BASELINE.read_text())
+    content["flags"]["paymentFailure"]["defaultVariant"] = "100%"
+    document.write_text(json.dumps(content))
+    monkeypatch.setenv(FLAG_PATH_ENV, str(document))
+
     shop = LiveShop(host="lab.example")
     assert shop.promql("up") == {"query": "up", "series": []}
     assert shop.reads[-1] == ("promql", {"query": "up"})
+    assert shop.armed() is True
+
+    result = shop.apply("set_flag", {"flag": "paymentFailure", "variant": "off"})
+    assert result["previous"] == "100%"
+    assert result["changed"] is True
+    assert json.loads(document.read_text())["flags"]["paymentFailure"]["defaultVariant"] == "off"
+    assert shop.armed() is False
+    # The fixture dict is not the shop. Recovery is whatever the document says.
     assert shop.flags["paymentFailure"] == "100%"
-    shop.apply("set_flag", {"flag": "paymentFailure", "variant": "off"})
-    assert shop.flags["paymentFailure"] == "off"
+
+    rolled = shop.apply("rollback_flag", {"flag": "paymentFailure", "variant": "100%"})
+    assert rolled["changed"] is True
+    assert shop.armed() is True
 
     # The trace line stays on this side of the move: these prints are what the
     # terminal demo shows, and stdout is safe here in a way it is not in a

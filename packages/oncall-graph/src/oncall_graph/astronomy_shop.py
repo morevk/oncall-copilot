@@ -28,6 +28,16 @@ because `solo_demo` is a terminal demo where that is the whole point.
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
+from oncall_contracts.flagd import current_variant, read_document
+from oncall_tools.servers.ops_actions import (
+    DEFAULT_FLAG_PATH,
+    FLAG_PATH_ENV,
+    rollback_flag,
+    set_flag,
+)
 from oncall_tools.servers.telemetry.client import (
     AstronomyShop,
     TelemetryNotConfigured,
@@ -46,7 +56,12 @@ __all__ = [
 
 
 class LiveShop(Shop):
-    """Scripted writes and reads, with the three telemetry tools pointed at the lab."""
+    """Live reads, and writes that go through the two ops-actions tools.
+
+    ``set_flag`` applies a runbook fix. ``rollback_flag`` restores the variant
+    the forward write reported. Anything else is refused. ``armed`` reads the
+    flagd document, so a write that never lands cannot look like recovery.
+    """
 
     def __init__(self, host: str | None = None, minutes: int = 5, fault: str = "paymentFailure"):
         super().__init__(fault=fault)
@@ -66,3 +81,27 @@ class LiveShop(Shop):
         say(f"      astronomy shop traces service={service!r}")
         self.reads.append(("traces", {"service": service}))
         return self.telemetry.traces(service)
+
+    def armed(self, flag: str = "paymentFailure") -> bool:
+        path = Path(os.environ.get(FLAG_PATH_ENV) or DEFAULT_FLAG_PATH)
+        return current_variant(read_document(path), flag) != self.DISARMED
+
+    def apply(self, tool, args):
+        """Write the flagd document. The in-memory ``flags`` dict is not the shop."""
+        clean = dict(args or {})
+        if tool == "set_flag":
+            reported = set_flag(str(clean.get("flag") or ""), str(clean.get("variant") or ""))
+        elif tool == "rollback_flag":
+            reported = rollback_flag(str(clean.get("flag") or ""), str(clean.get("variant") or ""))
+        else:
+            raise ValueError(f"unknown tool: {tool!r}")
+        self.writes.append({"tool": tool, "args": clean})
+        return {
+            "ok": True,
+            "tool": tool,
+            "args": clean,
+            "flag": reported["flag"],
+            "variant": reported["variant"],
+            "previous": reported["previous"],
+            "changed": reported["changed"],
+        }
