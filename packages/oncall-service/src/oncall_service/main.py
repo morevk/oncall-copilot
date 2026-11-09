@@ -33,7 +33,7 @@ from .alerts import AlertPayloadError, firing_alerts, is_notification_group
 from .database import IncidentDatabase
 
 STATIC = Path(__file__).with_name("static")
-TERMINAL = frozenset({"RECOVERED", "REJECTED", "ESCALATED", "APPROVAL_MISMATCH"})
+TERMINAL = frozenset({"RECOVERED", "REJECTED", "ESCALATED", "APPROVAL_MISMATCH", "APPLIED"})
 RUNNABLE: frozenset[Topology] = frozenset({"c1_single", "c2_team"})
 
 
@@ -497,8 +497,9 @@ def _open_runner(incident: Incident, tools=None) -> Solo | Team:
     scripted shop inside the runner; those two calls are not this seam.
     """
     if tools is not None:
-        # Reads come from the registry. The shop is only what apply and
-        # verify still call, and what the run record's write list is read from.
+        # Reads come from the registry, and so does the paymentFailure recovery
+        # query. The shop records writes. A graph with no promql still verifies
+        # against the shop's own rate.
         shop = Shop()
         if incident.config_id == "c1_single":
             return Solo(shop=shop, tools=tools, tool_budget=incident.tool_budget)

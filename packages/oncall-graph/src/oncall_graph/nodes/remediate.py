@@ -11,15 +11,25 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import time
 
 from langgraph.types import interrupt
+from oncall_tools.registry import ToolCallError
 
 from ..planning.monitor import code_rollback
 from ..planning.plan import default_rollback, validate_action
 from ..state import transcript_lines
 
-# The checkout alert fires above 5%. Recovery is a rate under that line.
+# The checkout alert fires above 5%. The scripted shop still uses this line.
+# A live paymentFailure run does not: recovery is successes returning.
 RECOVERY_LINE = 0.05
+
+# eval/faults/manifest.yaml, payment-failure recovery. One success inside the
+# window makes the rate positive, so verification does not wait out five minutes.
+RECOVERY_QUERY = "sum(rate(demo_payment_transactions_total[5m]))"
+RECOVERY_FLAG = "paymentFailure"
+RECOVERY_POLLS = 6
+RECOVERY_PAUSE_SECONDS = 10
 
 
 def command_payload(action) -> dict:
@@ -214,26 +224,133 @@ def execute_action_code(state, shop, tools=None):
     }
 
 
-def verify_metrics(state, shop):
-    """Read the checkout error rate after the action. The model does not decide."""
-    reading = shop.metrics()
-    rate = float(reading.get("error_rate") or 0)
-    recovered = rate < RECOVERY_LINE
+def _promql(tools, query: str) -> dict:
+    invoke = getattr(tools["promql"], "invoke", None)
+    if not callable(invoke):
+        return {"error": "promql has no invoke"}
+    try:
+        reading = invoke({"query": query})
+    except (ToolCallError, TypeError, ValueError) as exc:
+        return {"error": str(exc)}
+    if not isinstance(reading, dict):
+        return {"error": f"promql returned {type(reading).__name__}"}
+    return reading
+
+
+def _sample(reading: dict) -> float | None:
+    """The last value of the first series. An empty result is a rate of zero."""
+    if reading.get("error"):
+        return None
+    series = reading.get("series")
+    if not isinstance(series, list):
+        return None
+    if not series:
+        return 0.0
+    head = series[0]
+    value = head.get("value") if isinstance(head, dict) else None
+    if isinstance(value, (list, tuple)) and len(value) >= 2:
+        try:
+            return float(value[1])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _verify_update(state, *, recovered: bool, pending: bool, signal: str, ref: str, detail: str):
     plan = dict(state.get("plan") or {})
     plan["stage"] = "communicate" if recovered else "verify"
+    if recovered:
+        route, status, why = "recovered", "RECOVERED", ""
+    elif pending:
+        route, status, why = "pending", "APPLIED", "applied, not yet verified"
+    else:
+        route, status, why = "rollback", state.get("status") or "RUNNING", "verification failed"
     return {
         "plan": plan,
         "stage": plan["stage"],
         "verification": {
             "recovered": recovered,
-            "signal": "checkout_error_rate",
-            "evidence_refs": ["checkout_error_rate"],
+            "pending": pending,
+            "signal": signal,
+            "evidence_refs": [ref],
         },
-        "route": "recovered" if recovered else "rollback",
-        "status": "RECOVERED" if recovered else (state.get("status") or "RUNNING"),
-        "why": "" if recovered else "verification failed",
-        "transcript": transcript_lines("verify", f"verify recovered={recovered}"),
+        "route": route,
+        "status": status,
+        "why": why,
+        "transcript": transcript_lines("verify", detail),
     }
+
+
+def _verify_recovery_query(state, tools, *, attempts: int, pause) -> dict:
+    """Poll the payment-success rate. Zero after the cap is not a failed fix."""
+    last_error = ""
+    for attempt in range(attempts):
+        reading = _promql(tools, RECOVERY_QUERY)
+        sample = _sample(reading)
+        if sample is None:
+            last_error = str(reading.get("error") or "promql returned no sample")
+        elif sample > 0:
+            return _verify_update(
+                state,
+                recovered=True,
+                pending=False,
+                signal="demo_payment_transactions_total",
+                ref=RECOVERY_QUERY,
+                detail="verify recovered=True",
+            )
+        if attempt + 1 < attempts:
+            pause()
+    detail = "verify applied, not yet verified"
+    if last_error:
+        detail = f"{detail}: {last_error}"
+    return _verify_update(
+        state,
+        recovered=False,
+        pending=True,
+        signal="demo_payment_transactions_total",
+        ref=RECOVERY_QUERY,
+        detail=detail,
+    )
+
+
+def _scripted_recovery(state, shop) -> dict:
+    """The fixture has no lag. A flag left armed is a failed fix and rolls back."""
+    reading = shop.metrics()
+    rate = float(reading.get("error_rate") or 0)
+    recovered = rate < RECOVERY_LINE
+    return _verify_update(
+        state,
+        recovered=recovered,
+        pending=False,
+        signal="checkout_error_rate",
+        ref="checkout_error_rate",
+        detail=f"verify recovered={recovered}",
+    )
+
+
+def verify_metrics(state, shop, tools=None, *, attempts: int | None = None, pause=None):
+    """Decide recovery in code. The model does not.
+
+    A live ``paymentFailure`` run polls the manifest recovery query through
+    ``promql``. The rate becomes positive as soon as one success is scraped, so
+    the polls are short. Still zero when they end means the fix is applied and
+    not yet verified: the run stops, and it does not roll the flag back.
+    Any other case reads the scripted shop, whose rate moves the moment the
+    fixture flag changes.
+    """
+    action = state.get("proposed_action") or {}
+    flag = (action.get("args") or {}).get("flag")
+    if tools is not None and "promql" in tools and flag == RECOVERY_FLAG:
+        waits = RECOVERY_POLLS if attempts is None else attempts
+        if waits < 1:
+            raise ValueError("recovery polls must be at least 1")
+        return _verify_recovery_query(
+            state,
+            tools,
+            attempts=waits,
+            pause=pause or (lambda: time.sleep(RECOVERY_PAUSE_SECONDS)),
+        )
+    return _scripted_recovery(state, shop)
 
 
 def rollback_code(state, shop, tools=None):
@@ -264,6 +381,10 @@ def route_execute(state) -> str:
 
 
 def route_verify(state) -> str:
-    if (state.get("verification") or {}).get("recovered") is True:
+    verification = state.get("verification") or {}
+    if verification.get("recovered") is True:
         return "recovered"
+    # A 5-minute rate that has not moved yet is not evidence the fix failed.
+    if verification.get("pending") is True:
+        return "pending"
     return "rollback"

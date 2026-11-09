@@ -5,10 +5,12 @@ from langchain_core.messages import AIMessage
 from oncall_graph.config import DEFAULT_TOOL_BUDGET, SPECIALIST_MODEL, TOOL_BUDGETS
 from oncall_graph.meter import reset_log
 from oncall_graph.nodes.remediate import (
+    RECOVERY_QUERY,
     command_payload,
     execute_action_code,
     payload_hash,
     rollback_code,
+    route_verify,
     verify_metrics,
 )
 from oncall_graph.planning.plan import ACTION_TOOLS, READ_TOOLS, format_plan
@@ -189,6 +191,65 @@ def test_execute_refuses_a_hash_mismatch_and_runs_a_match():
     verified = verify_metrics(accepted, shop)
     assert verified["verification"]["recovered"] is True
     assert verified["status"] == "RECOVERED"
+
+
+class _Promql:
+    def __init__(self, samples):
+        self.samples = list(samples)
+        self.calls = 0
+
+    def invoke(self, args):
+        self.calls += 1
+        assert args == {"query": RECOVERY_QUERY}
+        value = self.samples.pop(0)
+        if isinstance(value, Exception):
+            raise value
+        return {"query": RECOVERY_QUERY, "series": [{"metric": {}, "value": [0, str(value)]}]}
+
+
+class _PromqlRegistry:
+    def __init__(self, promql):
+        self.promql = promql
+
+    def __contains__(self, name):
+        return name == "promql"
+
+    def __getitem__(self, name):
+        assert name == "promql"
+        return self.promql
+
+
+def test_a_live_payment_fix_recovers_when_transactions_resume():
+    promql = _Promql([0, 0, 1.5])
+    pauses = []
+    shop = Shop()
+    shop.flags["paymentFailure"] = "100%"
+    state = new_incident(plan={"stage": "verify"}, proposed_action=PAYMENT_ACTION)
+    verified = verify_metrics(
+        state, shop, _PromqlRegistry(promql), attempts=6, pause=lambda: pauses.append(1)
+    )
+
+    assert verified["status"] == "RECOVERED"
+    assert verified["verification"]["recovered"] is True
+    assert verified["verification"]["signal"] == "demo_payment_transactions_total"
+    assert promql.calls == 3
+    assert pauses == [1, 1]
+    assert route_verify(verified) == "recovered"
+    assert shop.flags["paymentFailure"] == "100%"
+
+
+def test_a_live_payment_fix_waits_out_and_does_not_roll_back():
+    promql = _Promql([0, 0])
+    shop = Shop()
+    state = new_incident(plan={"stage": "verify"}, proposed_action=PAYMENT_ACTION)
+    verified = verify_metrics(state, shop, _PromqlRegistry(promql), attempts=2, pause=lambda: None)
+
+    assert verified["status"] == "APPLIED"
+    assert verified["why"] == "applied, not yet verified"
+    assert verified["verification"]["recovered"] is False
+    assert verified["verification"]["pending"] is True
+    assert route_verify(verified) == "pending"
+    assert promql.calls == 2
 
 
 def test_approve_runs_the_exact_command_and_verifies_recovery():

@@ -46,7 +46,7 @@ class IncidentApiClient:
     """Submit an alert, approve its exact proposal, and read terminal evidence."""
 
     TERMINAL: ClassVar[frozenset[str]] = frozenset(
-        {"RECOVERED", "REJECTED", "ESCALATED", "APPROVAL_MISMATCH"}
+        {"RECOVERED", "REJECTED", "ESCALATED", "APPROVAL_MISMATCH", "APPLIED"}
     )
 
     def __init__(

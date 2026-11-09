@@ -309,7 +309,9 @@ class Team:
             "execute_action", route_execute, {"verify": "verify", "stop": END}
         )
         graph.add_conditional_edges(
-            "verify", route_verify, {"recovered": "comms", "rollback": "rollback"}
+            "verify",
+            route_verify,
+            {"recovered": "comms", "pending": END, "rollback": "rollback"},
         )
         graph.add_edge("rollback", "replan")
         graph.add_edge("comms", END)
@@ -734,7 +736,7 @@ class Team:
         return execute_action_code(state, self.shop, self.tools)
 
     def verify(self, state):
-        return verify_metrics(state, self.shop)
+        return verify_metrics(state, self.shop, self.tools)
 
     def rollback(self, state):
         return rollback_code(state, self.shop, self.tools)
