@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import ClassVar
 
 from fastapi.testclient import TestClient
+from oncall_graph.build import tools_requested
 from oncall_service.main import create_app
 
 
@@ -307,6 +308,28 @@ def test_unimplemented_topology_is_rejected_before_a_runner_starts(monkeypatch):
     assert response.json()["detail"] == "only c1_single and c2_team are implemented"
     assert solo.built == []
     assert team.built == []
+
+
+def test_tools_connect_only_when_the_transport_is_configured(monkeypatch):
+    """The image check sets no MCP_TRANSPORT. Connecting there exits the process."""
+    monkeypatch.delenv("MCP_TRANSPORT", raising=False)
+    assert tools_requested() is False
+    monkeypatch.setenv("MCP_TRANSPORT", "   ")
+    assert tools_requested() is False
+
+    opened = []
+
+    def explode():
+        opened.append("open")
+        raise AssertionError("open_tools was called")
+
+    monkeypatch.setattr("oncall_service.main.open_tools", explode)
+    with TestClient(create_app(demo_delay=0, connect_tools=tools_requested())) as client:
+        assert client.get("/healthz").json() == {"status": "ok"}
+    assert opened == []
+
+    monkeypatch.setenv("MCP_TRANSPORT", "http")
+    assert tools_requested() is True
 
 
 def test_a_connected_app_passes_the_registry_and_does_not_build_live_shop(monkeypatch):

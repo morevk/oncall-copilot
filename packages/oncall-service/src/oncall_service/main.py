@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from oncall_contracts.config import Topology
 from oncall_contracts.state import Alert
 from oncall_graph.astronomy_shop import LiveShop
-from oncall_graph.build import open_tools
+from oncall_graph.build import open_tools, tools_requested
 from oncall_graph.config import DEFAULT_TOOL_BUDGET, LIVE_TOOL_BUDGET
 from oncall_graph.nodes.remediate import command_payload, payload_hash
 from oncall_graph.stubs import Shop
@@ -776,7 +776,7 @@ def create_app(
     return app
 
 
-app = create_app(connect_tools=True)
+app = create_app(connect_tools=tools_requested())
 
 
 def run() -> None:

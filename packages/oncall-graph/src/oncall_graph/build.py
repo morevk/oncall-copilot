@@ -5,16 +5,29 @@ specialists. ``c0_workflow`` is still later, and stays unimplemented beside
 these two rather than by editing either of them.
 """
 
+import os
 from typing import Any
 
 from langgraph.graph.state import CompiledStateGraph
 from oncall_contracts.config import Topology
-from oncall_tools.registry import ToolRegistry, load_tools
+from oncall_tools.registry import TRANSPORT_ENV, ToolRegistry, load_tools
 
 from .config import DEFAULT_MAX_REVISIONS, DEFAULT_TOOL_BUDGET
 from .stubs import Shop
 from .topologies.c1_single import Solo
 from .topologies.c2_team import Team
+
+
+def tools_requested() -> bool:
+    """Whether this process was told to open the MCP registry.
+
+    Unset means do not connect. The image check starts oncall-service with
+    only ``ONCALL_SERVICE_HOST``, and the default transport is stdio. The
+    service image cannot host the runbook server: it has neither the corpus
+    nor the embedding model, so connecting there exits before ``/healthz``.
+    Compose sets ``MCP_TRANSPORT=http``, which is the signal to connect.
+    """
+    return bool(os.environ.get(TRANSPORT_ENV, "").strip())
 
 
 def open_tools():
