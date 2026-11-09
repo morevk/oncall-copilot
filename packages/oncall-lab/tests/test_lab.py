@@ -104,6 +104,8 @@ def test_lab_page_offers_the_fault_and_keeps_ground_truth_on_this_service(tmp_pa
     assert "Evaluation runner" in page.text
     assert "Run readiness check" in page.text
     assert "Run deterministic evaluation" in page.text
+    assert "evaluation-topology" in page.text
+    assert "C1 / C2 evaluation lab" in page.text
     assert "Evaluate a persisted incident" in page.text
     assert "Evaluate saved incident" in page.text
     assert "Evaluate all incidents" in page.text
@@ -112,6 +114,7 @@ def test_lab_page_offers_the_fault_and_keeps_ground_truth_on_this_service(tmp_pa
     assert "INJECT LIVE FAULTS" in page.text
     assert "/api/evaluation-jobs/capabilities" in script.text
     assert "/api/evaluation-jobs" in script.text
+    assert "config_id: evaluationTopology.value" in script.text
     assert "/api/saved-incidents" in script.text
     assert "/api/retrospective-evaluations" in script.text
     assert "/api/batch-evaluations" in script.text

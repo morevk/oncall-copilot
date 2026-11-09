@@ -67,6 +67,13 @@ def evaluate_persisted_incident(
         latency_ms=_latency_ms(incident),
         observation=None,
         source_incident_id=incident_id,
+        tool_budget=(
+            incident["tool_budget"]
+            if isinstance(incident.get("tool_budget"), int)
+            and not isinstance(incident.get("tool_budget"), bool)
+            and incident["tool_budget"] > 0
+            else case["expected"]["max_tool_calls"]
+        ),
     )
     artifact_path = artifacts_dir / f"{run_id}.json"
     write_run_record(artifact_path, record)

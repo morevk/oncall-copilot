@@ -141,13 +141,16 @@ def test_live_cli_refuses_when_another_evaluation_holds_the_lock(tmp_path: Path,
 
 def test_preflight_mode_requires_no_fault_acknowledgement(tmp_path: Path, monkeypatch, capsys):
     called = []
+    settings_seen = []
 
     def fake_execute(request, settings, emit):
         called.append(request)
+        settings_seen.append(settings)
         emit(EvaluationEvent("complete", "preflight PASS: stub"))
         return type("Result", (), {"passed": True})()
 
     monkeypatch.setattr("oncall_eval.harness.execute_evaluation", fake_execute)
+    monkeypatch.delenv("PROMETHEUS_URL", raising=False)
 
     result = main(
         [
@@ -166,4 +169,5 @@ def test_preflight_mode_requires_no_fault_acknowledgement(tmp_path: Path, monkey
     assert result == 0
     assert called[0].kind == "preflight"
     assert called[0].config_id == "c1_single"
+    assert settings_seen[0].prometheus_url == "http://localhost:9090"
     assert "preflight PASS" in capsys.readouterr().out

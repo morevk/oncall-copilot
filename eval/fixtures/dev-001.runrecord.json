@@ -7,6 +7,31 @@
   "correct_root_cause": true,
   "fault_id": "payment-failure",
   "failure_reasons": [],
+  "execution_trace": {
+    "agents": {
+      "solo": {
+        "input_tokens": 0,
+        "largest_prompt_tokens": 0,
+        "latency_ms": 0,
+        "model_calls": 1,
+        "model_id": "fixture/mock",
+        "output_tokens": 0,
+        "tool_calls": 4
+      }
+    },
+    "graph_path": [
+      "input_guard_stub",
+      "solo",
+      "propose_one_action",
+      "approval",
+      "execute",
+      "verify"
+    ],
+    "largest_prompt_tokens": 0,
+    "model_calls": 1,
+    "replans": 0,
+    "rollbacks": 0
+  },
   "harmful_actions": 0,
   "independently_verified_recovery": true,
   "latency_ms": 0,
@@ -21,6 +46,7 @@
   "system_reported_recovery": true,
   "tokens": 0,
   "tool_calls": 4,
+  "tool_budget": 10,
   "usd": 0.0,
   "verified_recovery": true,
   "within_tool_budget": true

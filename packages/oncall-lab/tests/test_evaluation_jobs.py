@@ -252,7 +252,7 @@ def test_browser_cannot_supply_paths_or_unknown_ids(tmp_path: Path):
         )
         unknown_topology = client.post(
             "/api/evaluation-jobs",
-            json={"kind": "preflight", "config_id": "c2_team", "case_ids": ["dev-001"]},
+            json={"kind": "preflight", "config_id": "c0_workflow", "case_ids": ["dev-001"]},
         )
         slash = client.post(
             "/api/evaluation-jobs",
@@ -349,7 +349,31 @@ def test_a_running_job_rejects_the_next_start(tmp_path: Path):
     assert "already active" in second.json()["detail"]
     assert capabilities["active_job_id"] == first.json()["job_id"]
     assert capabilities["judge_available"] is False
-    assert capabilities["topologies"] == ["c1_single"]
+    assert capabilities["topologies"] == ["c1_single", "c2_team"]
+
+
+def test_c2_preflight_is_started_with_the_selected_topology(tmp_path: Path):
+    seen = []
+
+    def execute(request, settings, emit):
+        seen.append(request)
+        emit(EvaluationEvent("complete", "preflight PASS: c2_team is ready"))
+        return _passed()
+
+    service = _service(tmp_path, execute)
+    app = create_app(manifest_path=MANIFEST, flag_path=tmp_path / "flags.json", jobs=service)
+    with TestClient(app) as client:
+        started = client.post(
+            "/api/evaluation-jobs",
+            json={"kind": "preflight", "config_id": "c2_team", "case_ids": ["dev-001"]},
+        )
+        service.join()
+        body = client.get(f"/api/evaluation-jobs/{started.json()['job_id']}").json()
+
+    assert started.status_code == 202
+    assert seen[0].config_id == "c2_team"
+    assert body["config_id"] == "c2_team"
+    assert body["state"] == "succeeded"
 
 
 def test_unexpected_failures_keep_a_short_message(tmp_path: Path):

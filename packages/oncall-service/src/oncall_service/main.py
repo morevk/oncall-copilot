@@ -276,11 +276,54 @@ def _system_run(incident: Incident, raw: dict[str, Any]) -> dict[str, Any]:
         "usd": 0.0,
         "verified_recovery": bool((raw.get("verification") or {}).get("recovered")),
         "rolled_back": any(
-            isinstance(item, dict) and item.get("tool") == "rollback" for item in writes
+            isinstance(item, dict) and item.get("tool") == "rollback_flag" for item in writes
         ),
         "model_ids": model_ids,
+        "execution_trace": _execution_trace(raw),
         "playbook_hash": _playbook_hash(incident),
         "error": incident.error,
+    }
+
+
+def _execution_trace(raw: dict[str, Any]) -> dict[str, Any]:
+    """Expose orchestration measurements without prompts, replies, or tool results."""
+    rows = [item for item in (raw.get("meter_rows") or []) if isinstance(item, dict)]
+    agents: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        name = str(row.get("agent") or "agent")
+        slot = agents.setdefault(
+            name,
+            {
+                "model_calls": 0,
+                "tool_calls": 0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "largest_prompt_tokens": 0,
+                "latency_ms": 0,
+                "model_id": "",
+            },
+        )
+        input_tokens = max(0, int(row.get("input_tokens") or 0))
+        output_tokens = max(0, int(row.get("output_tokens") or 0))
+        invoked = row.get("tools_invoked")
+        slot["model_calls"] += 1
+        slot["tool_calls"] += len(invoked) if isinstance(invoked, list) else 0
+        slot["input_tokens"] += input_tokens
+        slot["output_tokens"] += output_tokens
+        slot["largest_prompt_tokens"] = max(slot["largest_prompt_tokens"], input_tokens)
+        slot["latency_ms"] += max(0, round(float(row.get("seconds") or 0) * 1000))
+        if row.get("model_id"):
+            slot["model_id"] = str(row["model_id"])
+    path = [str(name) for name in (raw.get("graph_path") or [])]
+    return {
+        "model_calls": len(rows),
+        "largest_prompt_tokens": max(
+            (int(row.get("input_tokens") or 0) for row in rows), default=0
+        ),
+        "agents": agents,
+        "graph_path": path,
+        "replans": path.count("replan"),
+        "rollbacks": path.count("rollback"),
     }
 
 

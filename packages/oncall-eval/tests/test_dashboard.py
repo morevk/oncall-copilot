@@ -36,6 +36,9 @@ def test_dashboard_serves_read_only_console_and_empty_summary(tmp_path: Path):
         "database": str(tmp_path / "evaluation.sqlite3"),
     }
     assert "Evaluation runs" in page.text
+    assert "C1 / C2 results" in page.text
+    assert "Execution" in page.text
+    assert "Retrospective" in page.text
     assert "Control center" in page.text
     assert "Incidents" in page.text
     assert "URLSearchParams" in script.text
@@ -57,6 +60,7 @@ def test_dashboard_lists_and_aggregates_completed_run_artifacts(tmp_path: Path):
     assert listing["runs"][0]["passed"] is True
     assert listing["runs"][0]["rubric_score"] is None
     assert summary["passed"] == 1
+    assert summary["rubric_eligible"] == 1
     assert summary["by_config"][1]["config_id"] == "c1_single"
     assert summary["by_config"][1]["pass_rate"] == 1.0
     assert detail["rubric"] is None
@@ -75,6 +79,7 @@ def test_dashboard_joins_separate_rubric_by_run_id(tmp_path: Path):
     assert detail["rubric"]["score"] == 28
     assert detail["rubric"]["max_score"] == 35
     assert summary["rubric_scored"] == 1
+    assert summary["rubric_eligible"] == 1
 
 
 def test_dashboard_ignores_and_reports_invalid_artifact(tmp_path: Path):

@@ -34,10 +34,24 @@ services:
       MCP_HOST_TELEMETRY: mcp-telemetry
       MCP_HOST_RUNBOOKS: mcp-runbooks
       MCP_HOST_OPS_ACTIONS: mcp-ops-actions
+    # The registry opens all MCP sessions during application startup. Starting
+    # this container merely after creating the MCP containers races their port
+    # binding: the first connection is refused, Uvicorn exits, and `compose up
+    # --wait` reports a failed dependency even though the restart policy may
+    # recover seconds later. Wait for the three actual tool servers here.
     depends_on:
-      - prometheus
-      - jaeger
-      - opensearch
+      prometheus:
+        condition: service_started
+      jaeger:
+        condition: service_started
+      opensearch:
+        condition: service_started
+      mcp-telemetry:
+        condition: service_healthy
+      mcp-runbooks:
+        condition: service_healthy
+      mcp-ops-actions:
+        condition: service_healthy
     ports:
       - "8000:8000"
     volumes:

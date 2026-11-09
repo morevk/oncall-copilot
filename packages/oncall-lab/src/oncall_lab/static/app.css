@@ -89,6 +89,9 @@ main { width: min(1080px, calc(100% - 32px)); margin: 28px auto 0; }
 .runner-configuration div { border: 1px solid var(--line); border-radius: 9px; padding: 10px 11px; background: var(--surface-2); }
 .runner-configuration dt { color: var(--muted); font: 8px var(--mono); text-transform: uppercase; letter-spacing: .09em; }
 .runner-configuration dd { margin: 5px 0 0; font-size: 11px; font-weight: 680; }
+.runner-configuration select { width: 100%; min-width: 0; color: var(--text); border: 1px solid #3a424d; border-radius: 6px; background: #0b0d10; padding: 6px 7px; font-size: 11px; font-weight: 680; }
+.runner-configuration select:focus { outline: 1px solid var(--lime); border-color: var(--lime); }
+.runner-configuration select:disabled { color: var(--muted); opacity: .65; }
 .runner-copy { color: var(--muted); font-size: 12px; line-height: 1.5; margin: 14px 0 11px; }
 .runner-preflight { background: transparent; }
 .runner-acknowledgement { display: grid; grid-template-columns: 1fr auto; gap: 9px 10px; margin-top: 18px; padding-top: 17px; border-top: 1px solid var(--line); }

@@ -41,6 +41,7 @@ def _incident():
         "incident_id": "saved-001",
         "terminal": True,
         "config_id": "c1_single",
+        "tool_budget": 12,
         "created_at": "2026-11-08T10:00:00Z",
         "updated_at": "2026-11-08T10:00:03.250Z",
         "alert": {"labels": {"alertname": "CheckoutErrorRateHigh", "service": "checkout"}},
@@ -76,6 +77,7 @@ def test_saved_incident_is_scored_without_inventing_recovery_witness(tmp_path: P
     assert result.record["independently_verified_recovery"] is False
     assert result.record["cleanup_verified"] is False
     assert result.record["latency_ms"] == 3250
+    assert result.record["tool_budget"] == 12
     assert result.record["failure_reasons"] == [
         "system recovery claim was not independently observed"
     ]

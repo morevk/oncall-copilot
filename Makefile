@@ -1,6 +1,8 @@
 # Delegates container lifecycle to deploy/; keeps Python tooling here.
 .PHONY: help bootstrap up stop down reset config preflight verify urls reload-rules test lint fix guards eval-fixture eval-preflight eval-live-dev eval-judge eval-dashboard images ui
 
+CONFIG ?= c1_single
+
 help:
 	@$(MAKE) -C deploy help
 	@echo "test       run the whole test suite"
@@ -8,8 +10,8 @@ help:
 	@echo "fix        apply the fixes lint reports, then re-run lint"
 	@echo "guards     just the structural guards"
 	@echo "eval-fixture  replay development fixtures; no model calls or fault injection"
-	@echo "eval-preflight  verify C1 live dependencies without changing the lab"
-	@echo "eval-live-dev  run the development fault evaluation (requires ACK_LIVE_FAULTS=yes)"
+	@echo "eval-preflight  verify live dependencies; CONFIG=c1_single|c2_team"
+	@echo "eval-live-dev  run the development fault evaluation; CONFIG=c1_single|c2_team (requires ACK_LIVE_FAULTS=yes)"
 	@echo "eval-judge RUN_ID=<id>  rubric-score one saved run (requires configured judge)"
 	@echo "eval-dashboard  serve completed evaluation artifacts at 127.0.0.1:8030"
 	@echo "images     build every shipped image, then start the ones that need no mounts"
@@ -49,11 +51,11 @@ eval-fixture:
 	uv run python -m oncall_eval.harness --mock --cases eval/dev --fixtures eval/fixtures --group-by complexity --fail-under 1.0
 
 eval-preflight:
-	uv run --env-file .env python -m oncall_eval.harness --preflight --cases eval/dev --config c1_single --fail-under 1.0
+	uv run --env-file .env python -m oncall_eval.harness --preflight --cases eval/dev --config $(CONFIG) --fail-under 1.0
 
 eval-live-dev:
 	@test "$(ACK_LIVE_FAULTS)" = "yes" || (echo "Refusing to mutate the lab. Re-run with ACK_LIVE_FAULTS=yes"; exit 2)
-	uv run --env-file .env python -m oncall_eval.harness --live --yes-inject-faults --cases eval/dev --config c1_single --group-by complexity --fail-under 1.0
+	uv run --env-file .env python -m oncall_eval.harness --live --yes-inject-faults --cases eval/dev --config $(CONFIG) --group-by complexity --fail-under 1.0
 
 eval-judge:
 	@test -n "$(RUN_ID)" || (echo "RUN_ID is required. Example: make eval-judge RUN_ID=<id>"; exit 2)

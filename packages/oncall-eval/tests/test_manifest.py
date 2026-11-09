@@ -12,7 +12,8 @@ FLAGD = ROOT / "deploy" / "flagd" / "demo.flagd.json"
 def test_manifest_parses_and_fault_ids_are_unique():
     faults = load_manifest(MANIFEST)
     assert list(faults) == ["payment-failure"]
-    assert faults["payment-failure"]["detect"]["threshold"] == 0.5
+    assert faults["payment-failure"]["detect"]["operator"] == ">"
+    assert faults["payment-failure"]["detect"]["threshold"] == 0.05
     assert faults["payment-failure"]["recovery"]["operator"] == ">"
 
 

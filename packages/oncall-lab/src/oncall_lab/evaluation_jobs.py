@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 
 ACKNOWLEDGEMENT = "INJECT LIVE FAULTS"
 KINDS = ("preflight", "deterministic")
-TOPOLOGIES = ("c1_single",)
+TOPOLOGIES = ("c1_single", "c2_team")
 TERMINAL = ("succeeded", "failed", "interrupted")
 _SAFE_FAILURE = "evaluation failed before completion"
 _INTERRUPTED = "interrupted by process restart; a live run is not resumed"
@@ -427,7 +427,10 @@ class EvaluationJobService:
         if kind not in KINDS:
             raise JobRejected(f"unsupported evaluation kind {kind!r}")
         if config_id not in TOPOLOGIES:
-            raise JobRejected("only c1_single can be started from the control center")
+            raise JobRejected(
+                f"unsupported evaluation topology {config_id!r}; "
+                f"choose one of {', '.join(TOPOLOGIES)}"
+            )
         if not _plain_case_ids(case_ids):
             raise JobRejected("case_ids must be plain case identifiers")
         if kind == "deterministic" and acknowledgement != ACKNOWLEDGEMENT:

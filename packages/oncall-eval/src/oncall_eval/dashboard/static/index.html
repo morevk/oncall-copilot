@@ -29,10 +29,17 @@
       <section class="summary-strip" aria-label="Evaluation summary">
         <div class="summary-title"><span class="eyebrow">Completed artifacts</span><h1>Evaluation runs</h1></div>
         <div class="summary-stat"><span>Total</span><strong id="total-runs">—</strong></div>
+        <div class="summary-stat"><span>Retrospective</span><strong id="retrospective-runs">—</strong></div>
         <div class="summary-stat"><span>Passed</span><strong class="good" id="passed-runs">—</strong></div>
         <div class="summary-stat"><span>Failed</span><strong class="bad" id="failed-runs">—</strong></div>
+        <div class="summary-stat"><span>Errors</span><strong id="errored-runs">—</strong></div>
         <div class="summary-stat"><span>Pass rate</span><strong id="pass-rate">—</strong></div>
         <div class="summary-stat"><span>Rubric scored</span><strong id="rubric-count">—</strong></div>
+      </section>
+
+      <section class="comparison" aria-labelledby="comparison-title">
+        <div><span class="eyebrow">Comparable configurations</span><h2 id="comparison-title">C1 / C2 results</h2></div>
+        <div class="comparison-table" id="config-comparison" role="table" aria-label="C1 and C2 comparison"></div>
       </section>
 
       <section class="layout">
@@ -76,12 +83,14 @@
               <button class="tab active" data-tab="overview" type="button">Overview</button>
               <button class="tab" data-tab="deterministic" type="button">Deterministic</button>
               <button class="tab" data-tab="rubric" type="button">Rubric</button>
+              <button class="tab" data-tab="execution" type="button">Execution</button>
               <button class="tab" data-tab="timeline" type="button">Timeline</button>
             </nav>
 
             <section class="tab-panel" id="tab-overview"></section>
             <section class="tab-panel hidden" id="tab-deterministic"></section>
             <section class="tab-panel hidden" id="tab-rubric"></section>
+            <section class="tab-panel hidden" id="tab-execution"></section>
             <section class="tab-panel hidden" id="tab-timeline"></section>
           </div>
         </section>

@@ -28,7 +28,7 @@
           <h1>Control center</h1>
           <p>Generate a controlled fault, page the agent, watch the investigation, then inspect the evaluation report.</p>
         </div>
-        <span class="topology">C1 single-agent lab</span>
+        <span class="topology">C1 / C2 evaluation lab</span>
       </section>
 
       <section class="workflow" aria-label="Operator workflow">
@@ -53,7 +53,14 @@
         <div class="runner-layout">
           <div class="runner-controls">
             <dl class="runner-configuration">
-              <div><dt>Configuration</dt><dd>C1 single agent</dd></div>
+              <div>
+                <dt><label for="evaluation-topology">Configuration</label></dt>
+                <dd>
+                  <select id="evaluation-topology" aria-label="Evaluation configuration" disabled>
+                    <option value="">Loading…</option>
+                  </select>
+                </dd>
+              </div>
               <div><dt>Cases</dt><dd>All development cases</dd></div>
               <div><dt>Approval</dt><dd>Exact expected action only</dd></div>
             </dl>
