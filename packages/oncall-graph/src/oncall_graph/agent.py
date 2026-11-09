@@ -14,6 +14,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, START, StateGraph
+from oncall_tools.registry import ToolCallError
 
 from .config import SPECIALIST_MODEL
 from .llm import make_llm
@@ -176,7 +177,13 @@ class Agent:
             if fn is None:
                 result = f"{self.name} has no tool called {name}"
             else:
-                result = fn.invoke(args)
+                try:
+                    result = fn.invoke(args)
+                except ToolCallError as exc:
+                    # A rejected query has to reach the model. Raised through
+                    # this loop it ends the incident, and the model never sees
+                    # why the read failed or gets to correct it.
+                    result = {"error": str(exc)}
             self.tool_calls += 1
             if self.tool_budget is not None and self.tool_calls >= self.tool_budget:
                 self._stop = f"STOPPED: {self.name} hit its tool budget of {self.tool_budget}."
