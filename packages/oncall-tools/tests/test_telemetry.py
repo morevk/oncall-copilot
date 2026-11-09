@@ -563,6 +563,23 @@ def test_an_unreachable_prometheus_raises_rather_than_returning_an_error_dict(mo
     assert "Connection refused" in str(caught.value)
 
 
+def test_a_prometheus_400_includes_the_error_body(monkeypatch):
+    from urllib.error import HTTPError
+
+    def refuse(url, timeout=30):
+        raise HTTPError(
+            url,
+            400,
+            "Bad Request",
+            hdrs=None,
+            fp=BytesIO(b'{"status":"error","error":"parse error at char 80"}'),
+        )
+
+    monkeypatch.setattr("oncall_tools.servers.telemetry.client.urlopen", refuse)
+    with pytest.raises(TelemetryUnavailable, match="parse error at char 80"):
+        AstronomyShop(**LAB).promql("up")
+
+
 def test_a_prometheus_error_payload_raises(monkeypatch):
     monkeypatch.setattr(
         "oncall_tools.servers.telemetry.client.urlopen",
