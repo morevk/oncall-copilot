@@ -47,6 +47,7 @@ def merge(state, update):
             "hypotheses",
             "evidence",
             "graph_path",
+            "executed_writes",
         ):
             merged[key] = list(state.get(key) or []) + list(value or [])
         else:
@@ -376,6 +377,7 @@ def test_graph_channel_uses_the_contract_fields_and_keeps_its_own_name():
         "reinvestigate",
         "pending_rollback",
         "status",
+        "executed_writes",
         "meter_rows",
         "tool_calls",
         "graph_path",

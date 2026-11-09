@@ -76,6 +76,9 @@ class IncidentChannel(TypedDict):
 
     # The service reads these. They are not on the shared incident.
     status: str
+    # Approved writes, in order. ``last`` keeps only the newest step, so a
+    # rollback would otherwise hide the write it undoes.
+    executed_writes: Annotated[list[dict], operator.add]
     meter_rows: Annotated[list[dict], operator.add]
     tool_calls: int
     # Node names in visit order. Each node appends its own name, so a loop
@@ -139,6 +142,7 @@ def new_incident(
         "reinvestigate": False,
         "pending_rollback": {},
         "status": "RUNNING",
+        "executed_writes": [],
         "meter_rows": [],
         "tool_calls": 0,
         "graph_path": [],

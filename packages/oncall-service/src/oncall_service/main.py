@@ -251,7 +251,7 @@ def _system_run(incident: Incident, raw: dict[str, Any]) -> dict[str, Any]:
     proposed_action = None
     if isinstance(proposal, dict) and proposal.get("action"):
         proposed_action = {"action": proposal["action"], "args": dict(proposal.get("args") or {})}
-    writes = incident.runner.shop.writes if incident.runner is not None else []
+    writes = [item for item in (raw.get("executed_writes") or []) if isinstance(item, dict)]
     executed = [
         {"action": item.get("tool"), "args": dict(item.get("args") or {})}
         for item in writes
@@ -541,8 +541,8 @@ def _open_runner(incident: Incident, tools=None) -> Solo | Team:
     """
     if tools is not None:
         # Reads come from the registry, and so does the paymentFailure recovery
-        # query. The shop records writes. A graph with no promql still verifies
-        # against the shop's own rate.
+        # query. Approved writes land on executed_writes. A graph with no
+        # promql still verifies against the shop's own rate.
         shop = Shop()
         if incident.config_id == "c1_single":
             return Solo(shop=shop, tools=tools, tool_budget=incident.tool_budget)

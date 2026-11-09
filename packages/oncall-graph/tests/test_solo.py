@@ -191,6 +191,7 @@ def test_execute_refuses_a_hash_mismatch_and_runs_a_match():
             "args": {"flag": "paymentFailure", "variant": "off"},
         }
     ]
+    assert ran["executed_writes"] == shop.writes
     assert shop.flags["paymentFailure"] == "off"
     verified = verify_metrics(accepted, shop)
     assert verified["verification"]["recovered"] is True
@@ -425,7 +426,10 @@ def test_execute_and_rollback_call_the_registry_tools_not_the_fixture():
 
     assert registry.set_flag.calls == [{"flag": "paymentFailure", "variant": "off"}]
     assert ran["last"]["result"]["previous"] == "100%"
-    assert shop.writes[0]["tool"] == "set_flag"
+    assert shop.writes == []
+    assert ran["executed_writes"] == [
+        {"tool": "set_flag", "args": {"flag": "paymentFailure", "variant": "off"}}
+    ]
     assert shop.flags["paymentFailure"] == "off"
 
     state = dict(accepted)
@@ -433,6 +437,10 @@ def test_execute_and_rollback_call_the_registry_tools_not_the_fixture():
     rolled = rollback_code(state, shop, registry)
     assert registry.rollback_flag.calls == [{"flag": "paymentFailure", "variant": "100%"}]
     assert rolled["pending_rollback"]["tool"] == "rollback_flag"
+    assert rolled["executed_writes"] == [
+        {"tool": "rollback_flag", "args": {"flag": "paymentFailure", "variant": "100%"}}
+    ]
+    assert shop.writes == []
     assert shop.flags["paymentFailure"] == "100%"
 
 

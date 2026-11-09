@@ -62,12 +62,12 @@ class ContractSolo:
                 {},
             )
         assert resume == {"decision": "approve", "payload_hash": "contract-hash"}
-        self.shop.writes.append({"tool": "set_flag", "args": ACTION["args"]})
         return (
             state
             | {
                 "status": "RECOVERED",
                 "verification": {"recovered": True},
+                "executed_writes": [{"tool": "set_flag", "args": ACTION["args"]}],
             },
             {},
         )

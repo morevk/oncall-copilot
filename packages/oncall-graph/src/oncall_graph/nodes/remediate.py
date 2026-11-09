@@ -166,10 +166,12 @@ def apply_through(shop, tool, args, tools=None) -> dict:
     """Run one approved write.
 
     A registry that has the tool is the shop: ``set_flag`` and ``rollback_flag``
-    run in ``mcp-ops-actions``, which holds the flagd document. The scripted
-    ``Shop.apply`` remains for a graph built without that registry. The returned
-    variant is copied onto ``shop.flags`` so ``verify_metrics`` does not roll
-    back a write that landed; ``LiveShop.armed`` does not trust that copy.
+    run in ``mcp-ops-actions``, which holds the flagd document. That path does
+    not append to ``shop.writes``. The caller records the write on
+    ``executed_writes``. The scripted ``Shop.apply`` remains for a graph built
+    without that registry, and it keeps its own list. The returned variant is
+    copied onto ``shop.flags`` so ``verify_metrics`` does not roll back a write
+    that landed; ``LiveShop.armed`` does not trust that copy.
     """
     clean = dict(args or {})
     if tools is not None and tool in tools:
@@ -188,11 +190,14 @@ def apply_through(shop, tool, args, tools=None) -> dict:
             "previous": reported.get("previous"),
             "changed": reported.get("changed"),
         }
-        if hasattr(shop, "writes"):
-            shop.writes.append({"tool": tool, "args": clean})
         flag = result.get("flag")
         variant = result.get("variant")
-        if hasattr(shop, "flags") and isinstance(flag, str) and isinstance(variant, str):
+        if (
+            shop is not None
+            and hasattr(shop, "flags")
+            and isinstance(flag, str)
+            and isinstance(variant, str)
+        ):
             shop.flags[flag] = variant
         return result
     return shop.apply(tool, clean)
@@ -219,13 +224,12 @@ def execute_action_code(state, shop, tools=None):
     result = apply_through(shop, action["action"], action["args"], tools)
     plan = dict(state.get("plan") or {})
     plan["stage"] = "verify"
+    record = {"tool": action["action"], "args": dict(action["args"])}
     return {
         "plan": plan,
         "stage": "verify",
-        "last": {
-            "step": {"tool": action["action"], "args": dict(action["args"])},
-            "result": result,
-        },
+        "last": {"step": record, "result": result},
+        "executed_writes": [record],
         "ok": True,
         "route": "verify",
         "transcript": transcript_lines("execute", f"executed {action['action']}"),
@@ -397,16 +401,20 @@ def verify_metrics(state, shop, tools=None, *, attempts: int | None = None, paus
 def rollback_code(state, shop, tools=None):
     """Apply the inverse action in code. A prose rollback is recorded, not shelled."""
     pending = code_rollback(state)
-    if pending.get("tool"):
-        result = apply_through(shop, pending["tool"], pending.get("args") or {}, tools)
-    else:
-        result = {"ok": False, "skipped": True}
-    return {
+    update = {
         "pending_rollback": pending,
-        "last": {"step": pending, "result": result},
         "route": "replan",
         "transcript": transcript_lines("rollback", "rollback"),
     }
+    if pending.get("tool"):
+        args = dict(pending.get("args") or {})
+        result = apply_through(shop, pending["tool"], args, tools)
+        record = {"tool": pending["tool"], "args": args}
+        update["executed_writes"] = [record]
+        update["last"] = {"step": record, "result": result}
+    else:
+        update["last"] = {"step": pending, "result": {"ok": False, "skipped": True}}
+    return update
 
 
 def route_approval(state) -> str:
