@@ -19,10 +19,11 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from oncall_contracts.config import Topology
 from oncall_contracts.state import Alert
-from oncall_graph.astronomy_shop import LiveShop, RegistryShop
+from oncall_graph.astronomy_shop import LiveShop
 from oncall_graph.build import open_tools, tools_requested
 from oncall_graph.config import DEFAULT_TOOL_BUDGET, LIVE_TOOL_BUDGET
 from oncall_graph.nodes.remediate import command_payload, payload_hash
+from oncall_graph.stubs import Shop
 from oncall_graph.topologies.c1_single import Solo, interrupt_value
 from oncall_graph.topologies.c2_team import Team
 from oncall_memory import LessonStore
@@ -32,7 +33,7 @@ from .alerts import AlertPayloadError, firing_alerts, is_notification_group
 from .database import IncidentDatabase
 
 STATIC = Path(__file__).with_name("static")
-TERMINAL = frozenset({"RECOVERED", "REJECTED", "ESCALATED", "APPROVAL_MISMATCH"})
+TERMINAL = frozenset({"RECOVERED", "REJECTED", "ESCALATED", "APPROVAL_MISMATCH", "APPLIED"})
 RUNNABLE: frozenset[Topology] = frozenset({"c1_single", "c2_team"})
 
 
@@ -250,7 +251,7 @@ def _system_run(incident: Incident, raw: dict[str, Any]) -> dict[str, Any]:
     proposed_action = None
     if isinstance(proposal, dict) and proposal.get("action"):
         proposed_action = {"action": proposal["action"], "args": dict(proposal.get("args") or {})}
-    writes = incident.runner.shop.writes if incident.runner is not None else []
+    writes = [item for item in (raw.get("executed_writes") or []) if isinstance(item, dict)]
     executed = [
         {"action": item.get("tool"), "args": dict(item.get("args") or {})}
         for item in writes
@@ -535,11 +536,14 @@ def _playbook_hash(incident: Incident) -> str | None:
 def _open_runner(incident: Incident, tools=None) -> Solo | Team:
     """The same instance must resume, because its checkpointer holds the pause.
 
-    With a registry, model reads, approved writes, and recovery verification
-    all cross MCP. The same adapter retains the write audit used by run records.
+    A registry is what the model reads. apply and verify still use the
+    scripted shop inside the runner; those two calls are not this seam.
     """
     if tools is not None:
-        shop = RegistryShop(tools)
+        # Reads come from the registry, and so does the paymentFailure recovery
+        # query. Approved writes land on executed_writes. A graph with no
+        # promql still verifies against the shop's own rate.
+        shop = Shop()
         if incident.config_id == "c1_single":
             return Solo(shop=shop, tools=tools, tool_budget=incident.tool_budget)
         if incident.config_id == "c2_team":

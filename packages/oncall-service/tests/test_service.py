@@ -197,7 +197,7 @@ def _install_runners(monkeypatch, *, team_pauses: bool = False):
     """Stand in for both topologies so a test never builds an OpenRouter client."""
 
     class Shop:
-        def __init__(self, *_args):
+        def __init__(self):
             self.writes = []
 
     def runner(name: str, pauses: bool):
@@ -236,7 +236,6 @@ def _install_runners(monkeypatch, *, team_pauses: bool = False):
     solo = runner("Solo", pauses=False)
     team = runner("Team", pauses=team_pauses)
     monkeypatch.setattr("oncall_service.main.LiveShop", Shop)
-    monkeypatch.setattr("oncall_service.main.RegistryShop", Shop)
     monkeypatch.setattr("oncall_service.main.Solo", solo)
     monkeypatch.setattr("oncall_service.main.Team", team)
     return solo, team, Shop
@@ -343,17 +342,11 @@ def test_a_connected_app_passes_the_registry_and_does_not_build_live_shop(monkey
 
     registry = _Registry()
 
-    class _RegistryShop:
-        def __init__(self, source):
-            self.registry = source
-            self.writes = []
-
     def explode():
         raise AssertionError("LiveShop was constructed")
 
-    solo, team, _live_shop = _install_runners(monkeypatch)
+    solo, team, live_shop = _install_runners(monkeypatch)
     monkeypatch.setattr("oncall_service.main.LiveShop", explode)
-    monkeypatch.setattr("oncall_service.main.RegistryShop", _RegistryShop)
     monkeypatch.setattr("oncall_service.main.open_tools", lambda: registry)
     with TestClient(create_app(demo_delay=0, connect_tools=True)) as client:
         started = client.post("/alerts", json=ALERT)
@@ -365,6 +358,6 @@ def test_a_connected_app_passes_the_registry_and_does_not_build_live_shop(monkey
 
     assert registry.closed
     assert solo.built[0].extra["tools"] is registry
-    assert solo.built[0].shop.registry is registry
+    assert not isinstance(solo.built[0].shop, live_shop)
     assert team.built[0].extra["tools"] is registry
-    assert team.built[0].shop.registry is registry
+    assert not isinstance(team.built[0].shop, live_shop)

@@ -292,7 +292,7 @@ class EvaluationDatabase:
                        s.total_score AS rubric_score
                 FROM evaluation_runs AS r
                 LEFT JOIN rubric_scores AS s ON s.run_id = r.run_id
-                ORDER BY r.artifact_modified_ns DESC
+                ORDER BY r.artifact_modified_ns DESC, r.run_id DESC
                 """
             ).fetchall()
         results = []

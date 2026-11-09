@@ -5,9 +5,16 @@ from langchain_core.messages import AIMessage
 from oncall_graph.config import DEFAULT_TOOL_BUDGET, SPECIALIST_MODEL, TOOL_BUDGETS
 from oncall_graph.meter import reset_log
 from oncall_graph.nodes.remediate import (
+    CHECKOUT_FAILURE_QUERY,
+    RECOVERY_PAUSE_SECONDS,
+    RECOVERY_POLLS,
+    RECOVERY_QUERY,
+    RECOVERY_WINDOW_SECONDS,
     command_payload,
     execute_action_code,
     payload_hash,
+    rollback_code,
+    route_verify,
     verify_metrics,
 )
 from oncall_graph.planning.plan import ACTION_TOOLS, READ_TOOLS, format_plan
@@ -184,10 +191,107 @@ def test_execute_refuses_a_hash_mismatch_and_runs_a_match():
             "args": {"flag": "paymentFailure", "variant": "off"},
         }
     ]
+    assert ran["executed_writes"] == shop.writes
     assert shop.flags["paymentFailure"] == "off"
     verified = verify_metrics(accepted, shop)
     assert verified["verification"]["recovered"] is True
     assert verified["status"] == "RECOVERED"
+
+
+class _Promql:
+    def __init__(self, samples, failures=()):
+        self.samples = list(samples)
+        self.failures = list(failures)
+        self.queries = []
+
+    def invoke(self, args):
+        query = args["query"]
+        self.queries.append(query)
+        if query == RECOVERY_QUERY:
+            value = self.samples.pop(0)
+        elif query == CHECKOUT_FAILURE_QUERY:
+            value = self.failures.pop(0)
+        else:
+            raise AssertionError(query)
+        if isinstance(value, Exception):
+            raise value
+        return {"query": query, "series": [{"metric": {}, "value": [0, str(value)]}]}
+
+
+class _PromqlRegistry:
+    def __init__(self, promql):
+        self.promql = promql
+
+    def __contains__(self, name):
+        return name == "promql"
+
+    def __getitem__(self, name):
+        assert name == "promql"
+        return self.promql
+
+
+def test_a_live_payment_fix_recovers_when_transactions_resume():
+    promql = _Promql([0, 0, 1.5])
+    pauses = []
+    shop = Shop()
+    shop.flags["paymentFailure"] = "100%"
+    state = new_incident(plan={"stage": "verify"}, proposed_action=PAYMENT_ACTION)
+    verified = verify_metrics(
+        state, shop, _PromqlRegistry(promql), attempts=6, pause=lambda: pauses.append(1)
+    )
+
+    assert verified["status"] == "RECOVERED"
+    assert verified["verification"]["recovered"] is True
+    assert verified["verification"]["signal"] == "demo_payment_transactions_total"
+    assert promql.queries == [RECOVERY_QUERY, RECOVERY_QUERY, RECOVERY_QUERY]
+    assert pauses == [1, 1]
+    assert route_verify(verified) == "recovered"
+    assert shop.flags["paymentFailure"] == "100%"
+
+
+def test_live_payment_polls_cover_the_recovery_window():
+    assert (RECOVERY_POLLS - 1) * RECOVERY_PAUSE_SECONDS == RECOVERY_WINDOW_SECONDS
+
+
+def test_a_live_payment_fix_waits_out_and_does_not_roll_back():
+    promql = _Promql([0, 0], failures=[0])
+    shop = Shop()
+    state = new_incident(plan={"stage": "verify"}, proposed_action=PAYMENT_ACTION)
+    verified = verify_metrics(state, shop, _PromqlRegistry(promql), attempts=2, pause=lambda: None)
+
+    assert verified["status"] == "APPLIED"
+    assert verified["why"] == "applied, not yet verified"
+    assert verified["verification"]["recovered"] is False
+    assert verified["verification"]["pending"] is True
+    assert route_verify(verified) == "pending"
+    assert promql.queries == [RECOVERY_QUERY, RECOVERY_QUERY, CHECKOUT_FAILURE_QUERY]
+
+
+def test_a_live_payment_fix_rolls_back_when_checkout_failures_continue():
+    promql = _Promql([0, 0], failures=[1.25])
+    shop = Shop()
+    state = new_incident(plan={"stage": "verify"}, proposed_action=PAYMENT_ACTION)
+    verified = verify_metrics(state, shop, _PromqlRegistry(promql), attempts=2, pause=lambda: None)
+
+    assert verified["why"] == "verification failed"
+    assert verified["verification"]["recovered"] is False
+    assert verified["verification"]["pending"] is False
+    assert verified["verification"]["signal"] == "http_server_request_duration_seconds_count"
+    assert route_verify(verified) == "rollback"
+    assert promql.queries == [RECOVERY_QUERY, RECOVERY_QUERY, CHECKOUT_FAILURE_QUERY]
+    assert shop.flags["paymentFailure"] == "100%"
+
+
+def test_a_live_payment_fix_stays_applied_when_the_failure_query_cannot_be_read():
+    promql = _Promql([0], failures=[ValueError("prometheus down")])
+    shop = Shop()
+    state = new_incident(plan={"stage": "verify"}, proposed_action=PAYMENT_ACTION)
+    verified = verify_metrics(state, shop, _PromqlRegistry(promql), attempts=1, pause=lambda: None)
+
+    assert verified["status"] == "APPLIED"
+    assert verified["verification"]["pending"] is True
+    assert route_verify(verified) == "pending"
+    assert "checkout failure query returned no sample" in texts(verified)[-1]
 
 
 def test_approve_runs_the_exact_command_and_verifies_recovery():
@@ -283,6 +387,61 @@ def test_an_edit_interrupts_again_and_the_old_hash_does_not_run():
     assert solo.shop.writes[1]["tool"] == "rollback_flag"
     assert solo.shop.flags["paymentFailure"] == "100%"
     assert "rollback" in texts(done)
+
+
+class _Write:
+    def __init__(self, previous):
+        self.previous = previous
+        self.calls = []
+
+    def invoke(self, args):
+        self.calls.append(dict(args))
+        return {
+            "flag": args["flag"],
+            "variant": args["variant"],
+            "previous": self.previous,
+            "changed": True,
+        }
+
+
+class _Registry:
+    def __init__(self):
+        self.set_flag = _Write("100%")
+        self.rollback_flag = _Write("off")
+
+    def __contains__(self, name):
+        return name in {"set_flag", "rollback_flag"}
+
+    def __getitem__(self, name):
+        return getattr(self, name)
+
+
+def test_execute_and_rollback_call_the_registry_tools_not_the_fixture():
+    """The service's shop is the in-memory fixture. The write has to be the tool."""
+    registry = _Registry()
+    shop = Shop()
+    accepted = new_incident(plan={"stage": "act"}, proposed_action=PAYMENT_ACTION)
+    accepted["approval_payload_hash"] = payload_hash(command_payload(PAYMENT_ACTION))
+    ran = execute_action_code(accepted, shop, registry)
+
+    assert registry.set_flag.calls == [{"flag": "paymentFailure", "variant": "off"}]
+    assert ran["last"]["result"]["previous"] == "100%"
+    assert shop.writes == []
+    assert ran["executed_writes"] == [
+        {"tool": "set_flag", "args": {"flag": "paymentFailure", "variant": "off"}}
+    ]
+    assert shop.flags["paymentFailure"] == "off"
+
+    state = dict(accepted)
+    state.update(ran)
+    rolled = rollback_code(state, shop, registry)
+    assert registry.rollback_flag.calls == [{"flag": "paymentFailure", "variant": "100%"}]
+    assert rolled["pending_rollback"]["tool"] == "rollback_flag"
+    assert rolled["executed_writes"] == [
+        {"tool": "rollback_flag", "args": {"flag": "paymentFailure", "variant": "100%"}}
+    ]
+    assert shop.writes == []
+    assert shop.flags["paymentFailure"] == "100%"
 
 
 def test_failed_verification_rolls_back_then_replans():
