@@ -38,7 +38,7 @@ import logging
 import os
 import re
 from datetime import UTC, datetime, timedelta
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -197,6 +197,12 @@ class AstronomyShop:
         try:
             with urlopen(url, timeout=_TIMEOUT) as response:
                 return json.load(response)
+        except HTTPError as exc:
+            # Prometheus rejects a bad PromQL query with HTTP 400 and the
+            # reason in the body. urlopen raises before that body is read,
+            # so the model would only see "Bad Request".
+            detail = exc.read().decode(errors="replace")[:500]
+            raise TelemetryUnavailable(f"GET {url} failed: HTTP {exc.code}: {detail}") from exc
         except (URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
             raise TelemetryUnavailable(f"GET {url} failed: {exc}") from exc
 

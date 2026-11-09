@@ -7,6 +7,7 @@ import json
 import os
 import uuid
 from collections.abc import Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,8 +20,10 @@ from fastapi.staticfiles import StaticFiles
 from oncall_contracts.config import Topology
 from oncall_contracts.state import Alert
 from oncall_graph.astronomy_shop import LiveShop
+from oncall_graph.build import open_tools, tools_requested
 from oncall_graph.config import DEFAULT_TOOL_BUDGET, LIVE_TOOL_BUDGET
 from oncall_graph.nodes.remediate import command_payload, payload_hash
+from oncall_graph.stubs import Shop
 from oncall_graph.topologies.c1_single import Solo, interrupt_value
 from oncall_graph.topologies.c2_team import Team
 from oncall_memory import LessonStore
@@ -310,7 +313,7 @@ async def _run_real(store: IncidentStore, incident: Incident, resume: dict | Non
     )
     try:
         if resume is None:
-            incident.runner = _open_runner(incident)
+            incident.runner = _open_runner(incident, store.tools)
             raw, _measured = await asyncio.to_thread(
                 incident.runner.run,
                 incident.alert,
@@ -487,8 +490,26 @@ def _playbook_hash(incident: Incident) -> str | None:
     return digest if isinstance(digest, str) and digest else None
 
 
-def _open_runner(incident: Incident) -> Solo | Team:
-    """The same instance must resume, because its checkpointer holds the pause."""
+def _open_runner(incident: Incident, tools=None) -> Solo | Team:
+    """The same instance must resume, because its checkpointer holds the pause.
+
+    A registry is what the model reads. apply and verify still use the
+    scripted shop inside the runner; those two calls are not this seam.
+    """
+    if tools is not None:
+        # Reads come from the registry. The shop is only what apply and
+        # verify still call, and what the run record's write list is read from.
+        shop = Shop()
+        if incident.config_id == "c1_single":
+            return Solo(shop=shop, tools=tools, tool_budget=incident.tool_budget)
+        if incident.config_id == "c2_team":
+            return Team(
+                shop=shop,
+                tools=tools,
+                store=LessonStore.from_postmortems(),
+                tool_budget=incident.tool_budget,
+            )
+        raise RuntimeError(f"unsupported topology {incident.config_id!r}")
     shop = LiveShop()
     if incident.config_id == "c1_single":
         return Solo(shop=shop, tool_budget=incident.tool_budget)
@@ -537,8 +558,23 @@ def create_app(
     demo_delay: float = 0.65,
     cors_origins: Sequence[str] | None = None,
     database_path: Path | None = None,
+    tools: Any = None,
+    connect_tools: bool = False,
 ) -> FastAPI:
-    app = FastAPI(title="On-Call Copilot", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        opened = None
+        if connect_tools and store.tools is None:
+            opened = open_tools()
+            store.tools = opened
+        try:
+            yield
+        finally:
+            if opened is not None:
+                opened.close()
+                store.tools = None
+
+    app = FastAPI(title="On-Call Copilot", version="0.1.0", lifespan=lifespan)
     if cors_origins is None:
         cors_origins = tuple(
             origin.strip()
@@ -556,6 +592,7 @@ def create_app(
     if configured_database is None and (value := os.environ.get("ONCALL_INCIDENT_DATABASE")):
         configured_database = Path(value)
     store = IncidentStore(demo_delay=demo_delay, database_path=configured_database)
+    store.tools = tools
     app.state.incidents = store
     app.mount("/assets", StaticFiles(directory=STATIC), name="assets")
 
@@ -739,7 +776,7 @@ def create_app(
     return app
 
 
-app = create_app()
+app = create_app(connect_tools=tools_requested())
 
 
 def run() -> None:

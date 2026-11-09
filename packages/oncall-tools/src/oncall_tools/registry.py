@@ -286,7 +286,10 @@ def _stdio_env(spec: ServerSpec) -> dict[str, str]:
 
 def _client(spec: ServerSpec, transport: Transport, host: str) -> Client:
     if transport == "http":
-        return Client(spec.url(host))
+        # Compose gives each server its own DNS name. One host cannot name all
+        # three, so a set MCP_HOST_<SERVER> wins over the shared host.
+        chosen = os.environ.get(f"MCP_HOST_{spec.name.upper()}", host)
+        return Client(spec.url(chosen))
     return Client(
         StdioServerParameters(command="python", args=["-m", spec.module], env=_stdio_env(spec)),
     )

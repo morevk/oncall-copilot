@@ -7,12 +7,14 @@ calls, tool counts, prompt size, tokens, and seconds to that name.
 
 import operator
 import time
+from collections.abc import Mapping
 from typing import Annotated, TypedDict
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.errors import GraphRecursionError
 from langgraph.graph import END, START, StateGraph
+from oncall_tools.registry import ToolCallError
 
 from .config import SPECIALIST_MODEL
 from .llm import make_llm
@@ -26,7 +28,8 @@ class AgentState(TypedDict):
 class Tool:
     """A callable the specialist may use. ``fn`` keeps its real parameter names.
 
-    Later MCP tools replace this. ``Agent`` only needs ``name`` and ``invoke``.
+    An MCP tool is separate: it carries a JSON Schema and ``invoke``, and
+    ``_as_langchain_tool`` adapts it. ``Agent`` only needs ``name`` and ``invoke``.
     """
 
     def __init__(self, name, fn, description=None):
@@ -39,17 +42,32 @@ class Tool:
 
 
 def _as_langchain_tool(tool):
-    """LangChain tool, or a ``Tool`` whose ``fn`` has a real signature."""
+    """LangChain tool, a ``Tool`` with a typed ``fn``, or a JSON-Schema tool.
+
+    The schema branch is for an MCP ``ToolSpec``. Its ``invoke`` accepts a
+    mapping or keywords, so the Python signature would advertise ``args`` and
+    ``kwargs``. The server's schema is what the model must see.
+    """
     if isinstance(tool, BaseTool):
         return tool
     fn = getattr(tool, "fn", None)
-    if not callable(fn):
-        raise TypeError(
-            f"{getattr(tool, 'name', tool)!r} must be a LangChain tool or a Tool "
-            "whose fn has typed parameters"
+    if callable(fn):
+        description = getattr(tool, "description", "") or (fn.__doc__ or tool.name)
+        return StructuredTool.from_function(fn, name=tool.name, description=description)
+    schema = getattr(tool, "schema", None)
+    invoke = getattr(tool, "invoke", None)
+    if isinstance(schema, Mapping) and callable(invoke):
+        description = getattr(tool, "description", "") or tool.name
+        return StructuredTool(
+            name=tool.name,
+            description=description,
+            args_schema=dict(schema),
+            func=invoke,
         )
-    description = getattr(tool, "description", "") or (fn.__doc__ or tool.name)
-    return StructuredTool.from_function(fn, name=tool.name, description=description)
+    raise TypeError(
+        f"{getattr(tool, 'name', tool)!r} must be a LangChain tool, a Tool "
+        "whose fn has typed parameters, or a tool carrying a JSON Schema and invoke"
+    )
 
 
 def refused_tool_lines(messages) -> list[str]:
@@ -159,7 +177,13 @@ class Agent:
             if fn is None:
                 result = f"{self.name} has no tool called {name}"
             else:
-                result = fn.invoke(args)
+                try:
+                    result = fn.invoke(args)
+                except ToolCallError as exc:
+                    # A rejected query has to reach the model. Raised through
+                    # this loop it ends the incident, and the model never sees
+                    # why the read failed or gets to correct it.
+                    result = {"error": str(exc)}
             self.tool_calls += 1
             if self.tool_budget is not None and self.tool_calls >= self.tool_budget:
                 self._stop = f"STOPPED: {self.name} hit its tool budget of {self.tool_budget}."

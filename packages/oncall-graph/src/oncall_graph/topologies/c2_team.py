@@ -55,6 +55,7 @@ from ..evidence import (
 )
 from ..evidence import diagnose as diagnose_from_evidence
 from ..handoffs import (
+    complete_passages,
     decide_commander,
     diagnosis_from_exchanges,
     diagnosis_plan_text,
@@ -89,7 +90,18 @@ from ..planning.monitor import (
 )
 from ..planning.plan import format_plan, validate_plan
 from ..state import IncidentChannel, new_incident, transcript_lines
-from ..stubs import Shop, comms_tools, proposal_tools, runbook_tools, solo_run, telemetry_tools
+from ..stubs import (
+    COMMS_TOOLS,
+    RUNBOOK_TOOLS,
+    TELEMETRY_TOOLS,
+    Shop,
+    comms_tools,
+    proposal_tools,
+    runbook_tools,
+    solo_run,
+    telemetry_tools,
+    tools_from_registry,
+)
 from ..trace import add_tracked, attach_trace
 from .c1_single import input_guard_stub
 
@@ -201,6 +213,7 @@ class Team:
         self,
         model=None,
         shop=None,
+        tools=None,
         store=None,
         tool_budget=DEFAULT_TOOL_BUDGET,
         max_revisions=DEFAULT_MAX_REVISIONS,
@@ -208,6 +221,7 @@ class Team:
         parallel_diagnosis=True,
     ):
         self.shop = shop or Shop()
+        self.tools = tools
         self.store = store
         self.model = model
         self.tool_budget = tool_budget
@@ -219,6 +233,15 @@ class Team:
 
     def _specialist(self):
         return _model_for(self.model, SPECIALIST_MODEL)
+
+    def _specialist_tools(self, names, from_shop):
+        """Shop stubs, or the registry's own tools for those names.
+
+        The registry path does not fill a missing name from the shop.
+        """
+        if self.tools is None:
+            return from_shop(self.shop)
+        return tools_from_registry(self.tools, names)
 
     def _commander(self):
         return _model_for(self.model, COMMANDER_MODEL)
@@ -333,7 +356,7 @@ class Team:
             }
         result = _run(
             "triage",
-            telemetry_tools(self.shop),
+            self._specialist_tools(TELEMETRY_TOOLS, telemetry_tools),
             TRIAGE_PROMPT,
             self._specialist(),
             allowance,
@@ -351,7 +374,7 @@ class Team:
         if owed and spent < allowance and (failed or not promql):
             again = _run(
                 "triage",
-                telemetry_tools(self.shop),
+                self._specialist_tools(TELEMETRY_TOOLS, telemetry_tools),
                 TRIAGE_PROMPT,
                 self._specialist(),
                 allowance - spent,
@@ -484,7 +507,7 @@ class Team:
         prompt = diagnosis_prompt(services)
         result = _run(
             name,
-            telemetry_tools(self.shop),
+            self._specialist_tools(TELEMETRY_TOOLS, telemetry_tools),
             prompt,
             self._specialist(),
             allowance,
@@ -499,7 +522,7 @@ class Team:
             if owed and spent < allowance:
                 again = _run(
                     name,
-                    telemetry_tools(self.shop),
+                    self._specialist_tools(TELEMETRY_TOOLS, telemetry_tools),
                     prompt,
                     self._specialist(),
                     allowance - spent,
@@ -589,13 +612,15 @@ class Team:
         if allowance > 0:
             result = _run(
                 "runbook",
-                runbook_tools(self.shop),
+                self._specialist_tools(RUNBOOK_TOOLS, runbook_tools),
                 RUNBOOK_PROMPT,
                 self._specialist(),
                 allowance,
                 _worker_brief(state, "runbook", allowance),
             )
             passages = passages_from_exchanges(exchanges_from_messages(result["messages"]))
+            if self.tools is not None:
+                passages = complete_passages(passages, self.tools)
             rows = result["rows"]
             spent = result["tool_calls"]
         kept_passages, dropped_passages = partition_passages(
@@ -687,7 +712,7 @@ class Team:
         if remaining > 0:
             result = _run(
                 "comms",
-                comms_tools(self.shop),
+                self._specialist_tools(COMMS_TOOLS, comms_tools),
                 COMMS_PROMPT,
                 self._specialist(),
                 remaining,

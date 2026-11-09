@@ -413,7 +413,7 @@ def test_build_graph_compiles_the_solo_baseline():
     drawing = build_graph(topology="c1_single", model=Scripted([])).get_graph().draw_mermaid()
     for name in ("solo", "approval", "execute_action", "verify", "rollback"):
         assert name in drawing
-    with pytest.raises(NotImplementedError, match="scripted shop"):
+    with pytest.raises(TypeError, match="ToolRegistry"):
         build_graph({"promql": object()}, topology="c1_single")
-    with pytest.raises(NotImplementedError, match="scripted shop"):
+    with pytest.raises(TypeError, match="ToolRegistry"):
         build_graph({"promql": object()}, topology="c2_team")

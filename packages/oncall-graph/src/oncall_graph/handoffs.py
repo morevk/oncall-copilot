@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 
 from langchain_core.messages import AIMessage, ToolMessage
+from oncall_tools.registry import ToolCallError
 
 from .briefs import (
     alert_service,
@@ -33,9 +34,11 @@ CORRECTED_CONFIDENCE = 0.95
 
 
 def parse_tool_content(content):
-    """Tool messages store ``str(result)``. Recover the dict when it is one."""
+    """Tool messages store ``str(result)``. Recover a dict, or a list under ``result``."""
     if isinstance(content, dict):
         return content
+    if isinstance(content, list):
+        return {"result": content}
     if not isinstance(content, str):
         return {"text": str(content)}
     try:
@@ -44,6 +47,8 @@ def parse_tool_content(content):
         return {"text": content}
     if isinstance(value, dict):
         return value
+    if isinstance(value, list):
+        return {"result": value}
     return {"text": content}
 
 
@@ -350,22 +355,116 @@ def partition_passages(passages, *, service: str, symptom: str) -> tuple[list[di
     return kept, dropped
 
 
+def _render_fix(fix) -> str:
+    """The string remediation reads. Stub passages are already this shape."""
+    if isinstance(fix, str):
+        return fix.strip()
+    if not isinstance(fix, dict):
+        return ""
+    action = str(fix.get("action") or "").strip()
+    args = fix.get("args") if isinstance(fix.get("args"), dict) else {}
+    rendered = " ".join(f"{key} {args[key]}" for key in args)
+    return " ".join(part for part in (action, rendered) if part)
+
+
+def _as_passage(item: dict) -> dict:
+    """One passage. A search hit uses ``document_id``; a stub passage uses ``id``."""
+    passage = dict(item)
+    if not passage.get("id"):
+        passage["id"] = str(passage.get("document_id") or "")
+    if isinstance(passage.get("fix"), dict):
+        passage["fix"] = _render_fix(passage["fix"])
+    # Runbook files list preconditions as sentences. The matcher only understands
+    # a {service, symptom} dict, and a sentence list would drop every real hit.
+    if "preconditions" in passage and not isinstance(passage.get("preconditions"), dict):
+        passage.pop("preconditions")
+    return passage
+
+
+def _passage_items(result) -> list:
+    if not isinstance(result, dict):
+        return []
+    raw = result.get("passages")
+    if not isinstance(raw, list):
+        raw = result.get("result")
+    if not isinstance(raw, list):
+        return []
+    return raw
+
+
 def passages_from_exchanges(exchanges) -> list[dict]:
-    """Passages returned by search_runbooks, in call order."""
+    """Passages returned by search_runbooks, in call order.
+
+    The scripted shop returns ``{"passages": [...]}``. The runbook server returns
+    a list of hits, which the tool message stores as that list's repr.
+    """
     found = []
     for name, _args, result in exchanges:
-        if name == "search_runbooks":
-            found.extend(item for item in (result.get("passages") or []) if isinstance(item, dict))
+        if name != "search_runbooks":
+            continue
+        found.extend(_as_passage(item) for item in _passage_items(result) if isinstance(item, dict))
     return found
+
+
+def complete_passages(passages, tools) -> list[dict]:
+    """Fill a search hit's fix from ``get_runbook``. Hits do not carry the action.
+
+    A passage that already has a fix is left alone, so the scripted shop never
+    calls the server. A failed lookup keeps the hit: an id is still a match.
+    """
+    pending = [dict(item) for item in passages or [] if isinstance(item, dict)]
+    if tools is None or all(item.get("fix") for item in pending):
+        return pending
+    if "get_runbook" not in tools:
+        return pending
+    invoke = getattr(tools["get_runbook"], "invoke", None)
+    if not callable(invoke):
+        return pending
+    filled = []
+    for passage in pending:
+        if passage.get("fix"):
+            filled.append(passage)
+            continue
+        document_id = str(passage.get("id") or passage.get("document_id") or "")
+        if not document_id:
+            filled.append(passage)
+            continue
+        try:
+            document = invoke({"document_id": document_id})
+        except (ToolCallError, KeyError, TypeError, ValueError):
+            filled.append(passage)
+            continue
+        if (
+            isinstance(document, dict)
+            and isinstance(document.get("result"), dict)
+            and "fix" not in document
+        ):
+            document = document["result"]
+        if not isinstance(document, dict):
+            filled.append(passage)
+            continue
+        merged = dict(passage)
+        if document.get("symptom") and not merged.get("symptom"):
+            merged["symptom"] = document["symptom"]
+        if document.get("service") and not merged.get("service"):
+            merged["service"] = document["service"]
+        rendered = _render_fix(document.get("fix"))
+        if rendered:
+            merged["fix"] = rendered
+        filled.append(merged)
+    return filled
 
 
 def runbook_guidance(passages, lessons) -> str:
     """The hand-off remediation is allowed to read. Not the raw retrieval dump."""
     lines = ["Matched runbooks and lessons:"]
     for passage in passages:
-        lines.append(
-            f"passage {passage.get('id')}: service {passage.get('service')}; fix {passage.get('fix')}"
-        )
+        detail = f"service {passage.get('service')}"
+        symptom = passage.get("symptom") or ""
+        if symptom:
+            detail += f"; symptom {symptom}"
+        detail += f"; fix {passage.get('fix')}"
+        lines.append(f"passage {passage.get('id')}: {detail}")
     for lesson in lessons:
         # The playbook calls the sentence `statement`. The scripted lessons call it `text`.
         sentence = lesson.get("text") or lesson.get("statement") or ""

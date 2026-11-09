@@ -26,9 +26,9 @@ from ..nodes.remediate import (
     verify_metrics,
 )
 from ..planning.monitor import apply_replan
-from ..planning.plan import format_plan, validate_hypotheses, validate_plan
+from ..planning.plan import READ_TOOLS, format_plan, validate_hypotheses, validate_plan
 from ..state import IncidentChannel, new_incident, transcript_lines
-from ..stubs import Shop, proposal_tools, read_tools, solo_run
+from ..stubs import Shop, proposal_tools, read_tools, solo_run, tools_from_registry
 from ..trace import add_tracked, attach_trace
 
 SOLO_NAME = "solo"
@@ -44,10 +44,16 @@ SOLO_PROMPT = (
 )
 
 
-def make_solo_agent(shop, model=None, tool_budget=None):
-    """The section-2 agent: every read tool, plus the action schema, name ``solo``."""
-    tools = read_tools(shop) + proposal_tools()
-    return Agent(SOLO_NAME, tools, SOLO_PROMPT, model=model, tool_budget=tool_budget)
+def make_solo_agent(shop, model=None, tool_budget=None, tools=None):
+    """The section-2 agent: every read tool, plus the action schema, name ``solo``.
+
+    ``tools`` is an MCP registry. The proposal schema stays local: the
+    registry's ``set_flag`` writes, and this agent only proposes.
+    """
+    reads = read_tools(shop) if tools is None else tools_from_registry(tools, READ_TOOLS)
+    return Agent(
+        SOLO_NAME, reads + proposal_tools(), SOLO_PROMPT, model=model, tool_budget=tool_budget
+    )
 
 
 def interrupt_value(state):
@@ -196,15 +202,17 @@ class Solo:
         self,
         model=None,
         shop=None,
+        tools=None,
         tool_budget=DEFAULT_TOOL_BUDGET,
         max_revisions=DEFAULT_MAX_REVISIONS,
         checkpointer=None,
     ):
         self.shop = shop or Shop()
+        self.tools = tools
         self.tool_budget = tool_budget
         self.max_revisions = max_revisions
         self.checkpointer = checkpointer or InMemorySaver()
-        self.agent = make_solo_agent(self.shop, model=model, tool_budget=tool_budget)
+        self.agent = make_solo_agent(self.shop, model=model, tool_budget=tool_budget, tools=tools)
         self.last_trace = None
         self.graph = self._compile()
 

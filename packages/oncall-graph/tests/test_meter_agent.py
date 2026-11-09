@@ -266,6 +266,46 @@ def test_typed_tool_keeps_its_argument_names():
     assert stub.invoke({"query": "up"}) == {"query": "up"}
 
 
+def test_a_failed_mcp_tool_comes_back_to_the_model():
+    from oncall_tools.registry import ToolCallError
+
+    class _Broken:
+        name = "promql"
+        description = "read"
+
+        def invoke(self, _args):
+            raise ToolCallError("promql", "parse error at char 80")
+
+    class _Model:
+        def __init__(self):
+            self.seen = 0
+            self.followup = ""
+
+        def invoke(self, messages):
+            self.seen += 1
+            if self.seen == 1:
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "promql",
+                            "args": {"query": "sum(rate(up[5m])"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            self.followup = str(messages[-1].content)
+            return AIMessage(content="the query was rejected")
+
+    model = _Model()
+    answer = Agent("solo", [_Broken()], "investigate", model=model).ask("checkout")
+
+    assert answer == "the query was rejected"
+    assert model.seen == 2
+    assert "parse error at char 80" in model.followup
+
+
 def test_make_llm_requires_an_api_key(monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="OPENROUTER_API_KEY"):
