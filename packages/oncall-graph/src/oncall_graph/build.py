@@ -9,6 +9,7 @@ from typing import Any
 
 from langgraph.graph.state import CompiledStateGraph
 from oncall_contracts.config import Topology
+from oncall_tools.registry import ToolRegistry, load_tools
 
 from .config import DEFAULT_MAX_REVISIONS, DEFAULT_TOOL_BUDGET
 from .stubs import Shop
@@ -16,8 +17,17 @@ from .topologies.c1_single import Solo
 from .topologies.c2_team import Team
 
 
+def open_tools():
+    """Open the MCP sessions. The service may not import ``oncall_tools``.
+
+    The caller closes the registry. One registry is shared across incidents.
+    Opening one per alert would reload the runbook model every time.
+    """
+    return load_tools()
+
+
 def build_graph(
-    tools: dict[str, Any] | Shop | None = None,
+    tools: dict[str, Any] | Shop | ToolRegistry | None = None,
     store: Any = None,
     *,
     topology: Topology = "c2_team",
@@ -30,8 +40,9 @@ def build_graph(
     """Compile ``topology``.
 
     ``tools`` is the injected tool bundle. ``None`` or ``{}`` selects the
-    scripted shop. A non-empty tool dict is refused until the MCP registry
-    is wired in.     ``store`` is the lesson store the runbook step filters.
+    scripted shop. A ``ToolRegistry`` supplies the reads it actually has;
+    apply and verify still use a scripted shop. Any other value is refused.
+    ``store`` is the lesson store the runbook step filters.
     ``c1_single`` does not read it. ``model`` is a ready-made chat model.
     Omit it and an agent builds its OpenRouter client, which needs
     ``OPENROUTER_API_KEY``. ``c1_single`` builds that client while compiling.
@@ -40,19 +51,25 @@ def build_graph(
     list and the whole tool budget.
     """
     if topology in ("c1_single", "c2_team"):
-        if isinstance(tools, Shop):
+        registry = None
+        if isinstance(tools, ToolRegistry):
+            # Reads come from the registry. The shop remains for apply,
+            # verify, and rollback until those call the write server.
+            shop = Shop()
+            registry = tools
+        elif isinstance(tools, Shop):
             shop = tools
         elif tools in (None, {}):
             shop = Shop()
         else:
-            raise NotImplementedError(
-                f"{topology} still runs the scripted shop. "
-                "Pass tools=None until MCP tools are injected."
+            raise TypeError(
+                f"tools must be a ToolRegistry, a Shop, or empty. Got {type(tools).__name__}."
             )
         if topology == "c1_single":
             solo = Solo(
                 model=model,
                 shop=shop,
+                tools=registry,
                 tool_budget=tool_budget,
                 max_revisions=max_revisions,
                 checkpointer=checkpointer,
@@ -61,6 +78,7 @@ def build_graph(
         team = Team(
             model=model,
             shop=shop,
+            tools=registry,
             store=store,
             tool_budget=tool_budget,
             max_revisions=max_revisions,

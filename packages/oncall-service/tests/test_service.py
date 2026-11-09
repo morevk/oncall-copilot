@@ -307,3 +307,34 @@ def test_unimplemented_topology_is_rejected_before_a_runner_starts(monkeypatch):
     assert response.json()["detail"] == "only c1_single and c2_team are implemented"
     assert solo.built == []
     assert team.built == []
+
+
+def test_a_connected_app_passes_the_registry_and_does_not_build_live_shop(monkeypatch):
+    class _Registry:
+        def __init__(self):
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    registry = _Registry()
+
+    def explode():
+        raise AssertionError("LiveShop was constructed")
+
+    solo, team, live_shop = _install_runners(monkeypatch)
+    monkeypatch.setattr("oncall_service.main.LiveShop", explode)
+    monkeypatch.setattr("oncall_service.main.open_tools", lambda: registry)
+    with TestClient(create_app(demo_delay=0, connect_tools=True)) as client:
+        started = client.post("/alerts", json=ALERT)
+        assert started.status_code == 202
+        _wait_for_status(client, started.json()["incident_id"], "ESCALATED")
+        team_started = client.post("/alerts?config_id=c2_team", json=ALERT)
+        assert team_started.status_code == 202
+        _wait_for_status(client, team_started.json()["incident_id"], "ESCALATED")
+
+    assert registry.closed
+    assert solo.built[0].extra["tools"] is registry
+    assert not isinstance(solo.built[0].shop, live_shop)
+    assert team.built[0].extra["tools"] is registry
+    assert not isinstance(team.built[0].shop, live_shop)

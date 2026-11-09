@@ -458,6 +458,15 @@ def tools_named(shop: Shop, names) -> list:
     return [Tool(name, functions[name]) for name in names]
 
 
+def tools_from_registry(registry, names) -> list:
+    """Registry tools in ``names`` order. A name the registry lacks is absent.
+
+    A stub in that gap would answer a live run from fixture data. The model
+    then has no such tool, and a call names the gap.
+    """
+    return [registry[name] for name in names if name in registry]
+
+
 def read_tools(shop: Shop) -> list:
     """Every read tool the solo agent is offered. Results are data, not commands."""
     tools = tools_named(shop, READ_TOOLS)
