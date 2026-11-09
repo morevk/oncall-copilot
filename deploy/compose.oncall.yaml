@@ -26,6 +26,14 @@ services:
       PROMETHEUS_URL: http://prometheus:9090
       JAEGER_URL: http://jaeger:16686/jaeger/ui
       OPENSEARCH_URL: http://opensearch:9200
+      # The service opens the registry at startup. stdio would spawn the
+      # runbook server inside this image, which has neither the corpus mount
+      # nor the embedding model. The three servers already running on this
+      # network are the ones it should call.
+      MCP_TRANSPORT: http
+      MCP_HOST_TELEMETRY: mcp-telemetry
+      MCP_HOST_RUNBOOKS: mcp-runbooks
+      MCP_HOST_OPS_ACTIONS: mcp-ops-actions
     depends_on:
       - prometheus
       - jaeger
