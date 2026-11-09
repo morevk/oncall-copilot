@@ -5,7 +5,11 @@ from langchain_core.messages import AIMessage
 from oncall_graph.config import DEFAULT_TOOL_BUDGET, SPECIALIST_MODEL, TOOL_BUDGETS
 from oncall_graph.meter import reset_log
 from oncall_graph.nodes.remediate import (
+    CHECKOUT_FAILURE_QUERY,
+    RECOVERY_PAUSE_SECONDS,
+    RECOVERY_POLLS,
     RECOVERY_QUERY,
+    RECOVERY_WINDOW_SECONDS,
     command_payload,
     execute_action_code,
     payload_hash,
@@ -194,17 +198,23 @@ def test_execute_refuses_a_hash_mismatch_and_runs_a_match():
 
 
 class _Promql:
-    def __init__(self, samples):
+    def __init__(self, samples, failures=()):
         self.samples = list(samples)
-        self.calls = 0
+        self.failures = list(failures)
+        self.queries = []
 
     def invoke(self, args):
-        self.calls += 1
-        assert args == {"query": RECOVERY_QUERY}
-        value = self.samples.pop(0)
+        query = args["query"]
+        self.queries.append(query)
+        if query == RECOVERY_QUERY:
+            value = self.samples.pop(0)
+        elif query == CHECKOUT_FAILURE_QUERY:
+            value = self.failures.pop(0)
+        else:
+            raise AssertionError(query)
         if isinstance(value, Exception):
             raise value
-        return {"query": RECOVERY_QUERY, "series": [{"metric": {}, "value": [0, str(value)]}]}
+        return {"query": query, "series": [{"metric": {}, "value": [0, str(value)]}]}
 
 
 class _PromqlRegistry:
@@ -232,14 +242,18 @@ def test_a_live_payment_fix_recovers_when_transactions_resume():
     assert verified["status"] == "RECOVERED"
     assert verified["verification"]["recovered"] is True
     assert verified["verification"]["signal"] == "demo_payment_transactions_total"
-    assert promql.calls == 3
+    assert promql.queries == [RECOVERY_QUERY, RECOVERY_QUERY, RECOVERY_QUERY]
     assert pauses == [1, 1]
     assert route_verify(verified) == "recovered"
     assert shop.flags["paymentFailure"] == "100%"
 
 
+def test_live_payment_polls_cover_the_recovery_window():
+    assert (RECOVERY_POLLS - 1) * RECOVERY_PAUSE_SECONDS == RECOVERY_WINDOW_SECONDS
+
+
 def test_a_live_payment_fix_waits_out_and_does_not_roll_back():
-    promql = _Promql([0, 0])
+    promql = _Promql([0, 0], failures=[0])
     shop = Shop()
     state = new_incident(plan={"stage": "verify"}, proposed_action=PAYMENT_ACTION)
     verified = verify_metrics(state, shop, _PromqlRegistry(promql), attempts=2, pause=lambda: None)
@@ -249,7 +263,34 @@ def test_a_live_payment_fix_waits_out_and_does_not_roll_back():
     assert verified["verification"]["recovered"] is False
     assert verified["verification"]["pending"] is True
     assert route_verify(verified) == "pending"
-    assert promql.calls == 2
+    assert promql.queries == [RECOVERY_QUERY, RECOVERY_QUERY, CHECKOUT_FAILURE_QUERY]
+
+
+def test_a_live_payment_fix_rolls_back_when_checkout_failures_continue():
+    promql = _Promql([0, 0], failures=[1.25])
+    shop = Shop()
+    state = new_incident(plan={"stage": "verify"}, proposed_action=PAYMENT_ACTION)
+    verified = verify_metrics(state, shop, _PromqlRegistry(promql), attempts=2, pause=lambda: None)
+
+    assert verified["why"] == "verification failed"
+    assert verified["verification"]["recovered"] is False
+    assert verified["verification"]["pending"] is False
+    assert verified["verification"]["signal"] == "http_server_request_duration_seconds_count"
+    assert route_verify(verified) == "rollback"
+    assert promql.queries == [RECOVERY_QUERY, RECOVERY_QUERY, CHECKOUT_FAILURE_QUERY]
+    assert shop.flags["paymentFailure"] == "100%"
+
+
+def test_a_live_payment_fix_stays_applied_when_the_failure_query_cannot_be_read():
+    promql = _Promql([0], failures=[ValueError("prometheus down")])
+    shop = Shop()
+    state = new_incident(plan={"stage": "verify"}, proposed_action=PAYMENT_ACTION)
+    verified = verify_metrics(state, shop, _PromqlRegistry(promql), attempts=1, pause=lambda: None)
+
+    assert verified["status"] == "APPLIED"
+    assert verified["verification"]["pending"] is True
+    assert route_verify(verified) == "pending"
+    assert "checkout failure query returned no sample" in texts(verified)[-1]
 
 
 def test_approve_runs_the_exact_command_and_verifies_recovery():

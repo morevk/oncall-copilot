@@ -25,11 +25,19 @@ from ..state import transcript_lines
 RECOVERY_LINE = 0.05
 
 # eval/faults/manifest.yaml, payment-failure recovery. One success inside the
-# window makes the rate positive, so verification does not wait out five minutes.
+# window makes the rate positive, so a recovery returns before five minutes.
 RECOVERY_QUERY = "sum(rate(demo_payment_transactions_total[5m]))"
+# The detect query's 422 numerator. Read only once the window has elapsed, so
+# failures from before the fix have aged out of the same five-minute rate.
+CHECKOUT_FAILURE_QUERY = (
+    "sum(rate(http_server_request_duration_seconds_count{"
+    'service_name="frontend",http_response_status_code="422"}[5m]))'
+)
 RECOVERY_FLAG = "paymentFailure"
-RECOVERY_POLLS = 6
+RECOVERY_WINDOW_SECONDS = 300
 RECOVERY_PAUSE_SECONDS = 10
+# Pauses sit between polls, so the last poll lands on the window.
+RECOVERY_POLLS = RECOVERY_WINDOW_SECONDS // RECOVERY_PAUSE_SECONDS + 1
 
 
 def command_payload(action) -> dict:
@@ -281,8 +289,35 @@ def _verify_update(state, *, recovered: bool, pending: bool, signal: str, ref: s
     }
 
 
+def _checkout_failures_still_arriving(tools) -> bool | None:
+    """True when post-fix checkout traffic is still failing. None when unread."""
+    reading = _promql(tools, CHECKOUT_FAILURE_QUERY)
+    sample = _sample(reading)
+    if sample is None:
+        return None
+    return sample > 0
+
+
+def _applied_update(state, last_error: str) -> dict:
+    detail = "verify applied, not yet verified"
+    if last_error:
+        detail = f"{detail}: {last_error}"
+    return _verify_update(
+        state,
+        recovered=False,
+        pending=True,
+        signal="demo_payment_transactions_total",
+        ref=RECOVERY_QUERY,
+        detail=detail,
+    )
+
+
 def _verify_recovery_query(state, tools, *, attempts: int, pause) -> dict:
-    """Poll the payment-success rate. Zero after the cap is not a failed fix."""
+    """Poll the payment-success rate across the five-minute window.
+
+    A success returns immediately. The last poll is the failure check: checkout
+    422s still arriving means the fix failed, and a quiet shop stays applied.
+    """
     last_error = ""
     for attempt in range(attempts):
         reading = _promql(tools, RECOVERY_QUERY)
@@ -298,19 +333,24 @@ def _verify_recovery_query(state, tools, *, attempts: int, pause) -> dict:
                 ref=RECOVERY_QUERY,
                 detail="verify recovered=True",
             )
+        else:
+            last_error = ""
+        if sample == 0 and attempt + 1 == attempts:
+            still_failing = _checkout_failures_still_arriving(tools)
+            if still_failing is True:
+                return _verify_update(
+                    state,
+                    recovered=False,
+                    pending=False,
+                    signal="http_server_request_duration_seconds_count",
+                    ref=CHECKOUT_FAILURE_QUERY,
+                    detail="verify recovered=False",
+                )
+            if still_failing is None:
+                last_error = "checkout failure query returned no sample"
         if attempt + 1 < attempts:
             pause()
-    detail = "verify applied, not yet verified"
-    if last_error:
-        detail = f"{detail}: {last_error}"
-    return _verify_update(
-        state,
-        recovered=False,
-        pending=True,
-        signal="demo_payment_transactions_total",
-        ref=RECOVERY_QUERY,
-        detail=detail,
-    )
+    return _applied_update(state, last_error)
 
 
 def _scripted_recovery(state, shop) -> dict:
@@ -332,11 +372,12 @@ def verify_metrics(state, shop, tools=None, *, attempts: int | None = None, paus
     """Decide recovery in code. The model does not.
 
     A live ``paymentFailure`` run polls the manifest recovery query through
-    ``promql``. The rate becomes positive as soon as one success is scraped, so
-    the polls are short. Still zero when they end means the fix is applied and
-    not yet verified: the run stops, and it does not roll the flag back.
-    Any other case reads the scripted shop, whose rate moves the moment the
-    fixture flag changes.
+    ``promql``. One success returns recovered immediately. The last poll waits
+    out the five-minute window, so the rate no longer contains samples from
+    before the fix. Still zero then, with checkout 422s still arriving, is a
+    failed fix and takes the rollback edge. Still zero with a quiet checkout
+    stays applied, and the flag is not rolled back. Any other case reads the
+    scripted shop, whose rate moves the moment the fixture flag changes.
     """
     action = state.get("proposed_action") or {}
     flag = (action.get("args") or {}).get("flag")
