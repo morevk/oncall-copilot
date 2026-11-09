@@ -6,11 +6,11 @@
 how much of it the code already meets. That analysis was read against `600479e`; everything below
 was re-checked against the current tree, and the tests named here were run.
 
-"Done" means the code exists and a test covers it. The three payment alerts have since
-reached approval on a live shop. Objective 1 still stops before a real write and a recovery
-check.
+"Done" means the code exists and a test covers it. On `team-graph` (PR #37, not yet on `main`), the checkout alert reached approval on a
+live shop with `paymentFailure` armed, run on 2026-11-09. The other two payment alerts were not
+re-run on this branch. Objective 1 still stops before a real write and a recovery check.
 
-**Score: 19 of 28 done.** Objective 1 is what remains. Objective 2 is done in code
+**Score: 24 of 28 done.** Objective 1 is what remains. Objective 2 is done in code
 ([ADR-0007](decisions/0007-no-service-actions.md)); the log line itself is still P1's to put
 where `log_search` reads it. Objective 3 is shown on `c2_team`: the live team is given the
 playbook, a dropped lesson names the precondition that failed, and a lesson with no status is
@@ -26,8 +26,9 @@ The project file asks the demo to turn on `paymentFailure`, show the agent findi
 in the traces and proposing to switch the flag off, then show the engineer's approval and a
 verified recovery.
 
-**4 of 13 done.** A live run still ends `RECOVERED` because `verify_metrics` reads the agent's own
-in-memory write. Items 1.7 to 1.9 are what make that verdict describe the shop.
+**9 of 13 done.** The write is real now, through `mcp-ops-actions`. Verification is not yet: on the
+live service path the shop that `verify_metrics` reads is still an in-memory mirror (1.8), and the
+check is still the checkout error rate rather than the fault's recovery query (1.9).
 
 | # | Done when | Where it stands |
 | --- | --- | --- |
@@ -35,15 +36,15 @@ in-memory write. Items 1.7 to 1.9 are what make that verdict describe the shop.
 | 1.2 | The diagnosis tells `paymentFailure` from `paymentUnreachable`, and does not read the loudest error group as the cause. Jaeger's most frequent failing operation is routine flag evaluation; the payment rows sort last. | **Done in `c2_team`.** `evidence.py` (commit `d9e3925`). `c1_single` does not use it. |
 | 1.3 | The model proposes exactly one `set_flag` with `{flag, variant}`, and `validate_action` accepts it. | **Done.** |
 | 1.4 | Approval binds to the payload hash. An edited payload or a stale hash interrupts again and writes nothing. | **Done.** `nodes/remediate.py`. |
-| 1.5 | `agent._as_langchain_tool` grows its third branch, so an MCP tool reaches a specialist. | **Not done.** `agent.py` accepts a LangChain tool or a `Tool` with a real signature, and nothing else. |
-| 1.6 | `build_graph` stops refusing a tool registry, and the service passes a registry instead of `LiveShop()`. | **Not done.** `build.py` raises `NotImplementedError` for any non-empty tool dict. `_open_runner` builds `LiveShop()` (`main.py`). |
-| 1.7 | `apply` writes the flagd document through `mcp-ops-actions`, which already takes `{flag, variant}` and returns `previous`. | **Not done.** `Shop.apply` mutates `self.flags` (`stubs.py`). |
-| 1.8 | `armed()` and `metrics()` read that document. A write that never lands must not read back as recovery. | **Not done.** Both read `self.flags`, which `apply` just wrote. |
+| 1.5 | `agent._as_langchain_tool` grows its third branch, so an MCP tool reaches a specialist. | **Done.** The third branch passes the server's JSON Schema as `args_schema` and uses `invoke` as the function (`agent.py`). `test_tool_adapter.py`. Commit `af1177a`. |
+| 1.6 | `build_graph` stops refusing a tool registry, and the service passes a registry instead of `LiveShop()`. | **Done.** `build_graph` accepts a `ToolRegistry` and reads from it (`build.py`). `_open_runner` gets the registry when the service connects (`MCP_TRANSPORT` set) and builds `LiveShop()` otherwise. Apply and verify still use the scripted `Shop` until 1.7. `test_registry_wiring.py`, `test_service.py`. Commits `0e61290`, `1e8e7a5`. |
+| 1.7 | `apply` writes the flagd document through `mcp-ops-actions`, which already takes `{flag, variant}` and returns `previous`. | **Done.** `LiveShop.apply` calls `set_flag` and `rollback_flag` from `ops_actions` (`astronomy_shop.py`). On the service path, `execute` and `rollback` call the same two tools on the registry (`nodes/remediate.py`, `apply_through`). The scripted `Shop.apply` remains for graphs built without a registry. |
+| 1.8 | `armed()` and `metrics()` read that document. A write that never lands must not read back as recovery. | **Partly done.** `LiveShop.armed()` reads the document, and `metrics()` follows it. The service's shop is still a plain `Shop()` (`main.py`, `_open_runner`). It reads a mirror that `apply_through` fills from the registry's reported variant. A write that reports success without landing would still verify as recovered on the live path. Not counted in the score. |
 | 1.9 | `verify_metrics` runs the fault's recovery query instead of `shop.metrics()`. | **Not done.** It compares `shop.metrics()["error_rate"]` with `RECOVERY_LINE = 0.05` (`nodes/remediate.py`). P4 owns the expression; `eval/faults/manifest.yaml` already gives it for `payment-failure`: `sum(rate(demo_payment_transactions_total[5m])) > 0`. |
 | 1.10 | **Decision.** A 5-minute rate cannot confirm recovery instantly. Verification either polls, or the run reports "applied, not yet verified". | **Open.** |
-| 1.11 | `search_runbooks` reads `mcp-runbooks`. The three fixture passages name `paymentFailure`, so a diagnosis that cites them cannot be wrong. | **Not done.** `stubs.py`, `search_runbooks`. |
-| 1.12 | `test_live_shop_reads_telemetry_and_keeps_stub_writes` is retired or rewritten. It asserts the in-memory write this objective removes. | **Not done.** `packages/oncall-graph/tests/test_astronomy_shop.py`. |
-| 1.13 | `tests/test_apply_reaches_the_real_shop.py` passes. It pins 1.7, 1.8 and the refusals the seam buys: an invented flag, a re-arm through `set_flag`, and `restart`. | **0 of 7.** All seven skip until the seam exists. |
+| 1.11 | `search_runbooks` reads `mcp-runbooks`. The three fixture passages name `paymentFailure`, so a diagnosis that cites them cannot be wrong. | **Partly done.** On the service path, `search_runbooks` hits from `mcp-runbooks` become passages, and a missing fix is loaded with `get_runbook` (`handoffs.py`, `052a341`). The checkout smoke run reached approval through that path. The scripted path still uses the stub fixture (`stubs.py`), and no test pins the citation. Not counted in the score. |
+| 1.12 | `test_live_shop_reads_telemetry_and_keeps_stub_writes` is retired or rewritten. It asserts the in-memory write this objective removes. | **Done.** Rewritten as `test_live_shop_reads_telemetry_and_writes_the_document` in `packages/oncall-graph/tests/test_astronomy_shop.py`. |
+| 1.13 | `tests/test_apply_reaches_the_real_shop.py` passes. It pins 1.7, 1.8 and the refusals the seam buys: an invented flag, a re-arm through `set_flag`, and `restart`. | **Done, 7 of 7, no skips.** The file exercises `LiveShop`. It does not exercise the service's `Shop()` path, which is the gap in 1.8. |
 
 ---
 
@@ -94,10 +95,11 @@ P1 owns the store and the seed postmortems, and both landed in commit `7884566`.
 
 1. 2.1 and 3.4 are settled. Objective 2 and objective 3 are done in code. P1 can author the
    injected log line now.
-2. 1.5 and 1.6, the tool adapter and the registry. They gate 1.7, 1.9 and 1.11.
-3. 1.7 through 1.10, then 1.12 and 1.13. `tests/test_apply_reaches_the_real_shop.py` is the
-   executable check for 1.7 and 1.8. 1.10 is still an open decision: a 5-minute rate cannot
-   confirm recovery instantly.
+2. 1.5 to 1.7 and 1.12 and 1.13 are done on `team-graph`. Next is 1.8 on the service path: give
+   the service a shop whose `armed()` reads the flagd document, or read the document in the
+   verification step. That is a design choice for P2 and P5.
+3. Then 1.9, the fault's recovery query. 1.10 is still an open decision: a 5-minute rate cannot
+   confirm recovery instantly. 1.11 is partly done; the scripted path still uses the stub fixture.
 
 `_open_runner` in `packages/oncall-service/src/oncall_service/main.py` now builds the team with
 the playbook. That file is in P5's package. The gap analysis assigns the change to P2.
