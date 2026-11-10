@@ -4,13 +4,14 @@ Skipped unless ``ONCALL_LIVE_SMOKE=1``. Each test posts one alert from
 ``team_demo`` to a running oncall-service, which calls OpenRouter and reads
 the lab. It does not arm or disarm a fault.
 
-The two ``paymentFailure`` alerts approve the proposed ``set_flag`` and wait
-until verification finishes. ``RECOVERED`` means the payment-success rate
-moved. ``APPLIED`` means the five-minute window ended on a quiet checkout, and
-the flag was not rolled back. Checkout 422s still arriving after that window
-roll the flag back, and the run leaves these two statuses. The unavailable
-alert stops at the gate: its verify still uses the scripted rate, and
-approving it can roll the live flag back.
+Each alert approves the proposed ``set_flag`` and waits until verification
+finishes. For ``paymentFailure``, ``RECOVERED`` means the payment-success rate
+moved and ``APPLIED`` means the five-minute window ended on a quiet checkout.
+Checkout 422s still arriving after that window roll the flag back. For
+``paymentUnreachable``, ``RECOVERED`` means the payment server Charge rate
+rose above zero. ``APPLIED`` means the window ended with both Charge rates at
+zero. Checkout Charge client errors still above zero while that server rate
+is still zero roll the flag back. A rollback leaves these statuses.
 
 ``paymentFailure`` should be armed for the charge and checkout alerts.
 ``paymentUnreachable`` should be armed, and ``paymentFailure`` disarmed, for
@@ -136,7 +137,7 @@ def test_payment_unavailable_alert_reaches_approval() -> None:
         PAYMENT_UNAVAILABLE_ALERT,
         "smoke-payment-unavailable",
         "paymentUnreachable",
-        approve=False,
+        approve=True,
     )
 
 

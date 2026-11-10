@@ -3,6 +3,7 @@
 import pytest
 from langchain_core.messages import AIMessage
 from oncall_graph.config import DEFAULT_TOOL_BUDGET, SPECIALIST_MODEL, TOOL_BUDGETS
+from oncall_graph.evidence import CLIENT_CHARGE, SERVER_CHARGE
 from oncall_graph.meter import reset_log
 from oncall_graph.nodes.remediate import (
     CHECKOUT_FAILURE_QUERY,
@@ -31,6 +32,13 @@ PAYMENT_ACTION = {
     "args": {"flag": "paymentFailure", "variant": "off"},
     "expected_effect": "checkout error rate falls below 5%",
     "rollback": "rollback_flag paymentFailure to its previous variant",
+}
+
+UNREACHABLE_ACTION = {
+    "action": "set_flag",
+    "args": {"flag": "paymentUnreachable", "variant": "off"},
+    "expected_effect": "payment accepts Charge calls again",
+    "rollback": "rollback_flag paymentUnreachable to its previous variant",
 }
 
 
@@ -199,9 +207,11 @@ def test_execute_refuses_a_hash_mismatch_and_runs_a_match():
 
 
 class _Promql:
-    def __init__(self, samples, failures=()):
+    def __init__(self, samples=(), failures=(), client=(), server=()):
         self.samples = list(samples)
         self.failures = list(failures)
+        self.client = list(client)
+        self.server = list(server)
         self.queries = []
 
     def invoke(self, args):
@@ -211,6 +221,10 @@ class _Promql:
             value = self.samples.pop(0)
         elif query == CHECKOUT_FAILURE_QUERY:
             value = self.failures.pop(0)
+        elif query == CLIENT_CHARGE:
+            value = self.client.pop(0)
+        elif query == SERVER_CHARGE:
+            value = self.server.pop(0)
         else:
             raise AssertionError(query)
         if isinstance(value, Exception):
@@ -292,6 +306,61 @@ def test_a_live_payment_fix_stays_applied_when_the_failure_query_cannot_be_read(
     assert verified["verification"]["pending"] is True
     assert route_verify(verified) == "pending"
     assert "checkout failure query returned no sample" in texts(verified)[-1]
+
+
+def test_an_unreachable_fix_recovers_when_the_server_takes_charges():
+    promql = _Promql(server=[0, 1.4], client=[2.0])
+    shop = Shop(fault="paymentUnreachable")
+    state = new_incident(plan={"stage": "verify"}, proposed_action=UNREACHABLE_ACTION)
+    verified = verify_metrics(state, shop, _PromqlRegistry(promql), attempts=6, pause=lambda: None)
+
+    assert verified["status"] == "RECOVERED"
+    assert verified["verification"]["recovered"] is True
+    assert verified["verification"]["signal"] == "SPAN_KIND_SERVER"
+    assert verified["verification"]["evidence_refs"] == [SERVER_CHARGE]
+    assert promql.queries == [SERVER_CHARGE, SERVER_CHARGE]
+    assert route_verify(verified) == "recovered"
+    assert shop.flags["paymentUnreachable"] == "on"
+
+
+def test_an_unreachable_fix_rolls_back_when_client_errors_continue():
+    promql = _Promql(server=[0, 0], client=[1.25])
+    shop = Shop(fault="paymentUnreachable")
+    state = new_incident(plan={"stage": "verify"}, proposed_action=UNREACHABLE_ACTION)
+    verified = verify_metrics(state, shop, _PromqlRegistry(promql), attempts=2, pause=lambda: None)
+
+    assert verified["why"] == "verification failed"
+    assert verified["verification"]["recovered"] is False
+    assert verified["verification"]["pending"] is False
+    assert verified["verification"]["signal"] == "SPAN_KIND_CLIENT"
+    assert verified["verification"]["evidence_refs"] == [CLIENT_CHARGE]
+    assert route_verify(verified) == "rollback"
+    assert promql.queries == [SERVER_CHARGE, SERVER_CHARGE, CLIENT_CHARGE]
+    assert shop.flags["paymentUnreachable"] == "on"
+
+
+def test_an_unreachable_fix_stays_applied_when_both_charge_rates_are_zero():
+    promql = _Promql(server=[0, 0], client=[0])
+    shop = Shop(fault="paymentUnreachable")
+    state = new_incident(plan={"stage": "verify"}, proposed_action=UNREACHABLE_ACTION)
+    verified = verify_metrics(state, shop, _PromqlRegistry(promql), attempts=2, pause=lambda: None)
+
+    assert verified["status"] == "APPLIED"
+    assert verified["verification"]["pending"] is True
+    assert route_verify(verified) == "pending"
+    assert promql.queries == [SERVER_CHARGE, SERVER_CHARGE, CLIENT_CHARGE]
+
+
+def test_an_unreachable_fix_stays_applied_when_the_client_query_cannot_be_read():
+    promql = _Promql(server=[0], client=[ValueError("prometheus down")])
+    shop = Shop(fault="paymentUnreachable")
+    state = new_incident(plan={"stage": "verify"}, proposed_action=UNREACHABLE_ACTION)
+    verified = verify_metrics(state, shop, _PromqlRegistry(promql), attempts=1, pause=lambda: None)
+
+    assert verified["status"] == "APPLIED"
+    assert verified["verification"]["pending"] is True
+    assert route_verify(verified) == "pending"
+    assert "checkout charge query returned no sample" in texts(verified)[-1]
 
 
 def test_approve_runs_the_exact_command_and_verifies_recovery():

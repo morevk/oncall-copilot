@@ -16,6 +16,7 @@ import time
 from langgraph.types import interrupt
 from oncall_tools.registry import ToolCallError
 
+from ..evidence import CLIENT_CHARGE, SERVER_CHARGE
 from ..planning.monitor import code_rollback
 from ..planning.plan import default_rollback, validate_action
 from ..state import transcript_lines
@@ -34,6 +35,9 @@ CHECKOUT_FAILURE_QUERY = (
     'service_name="frontend",http_response_status_code="422"}[5m]))'
 )
 RECOVERY_FLAG = "paymentFailure"
+# paymentUnreachable: checkout's Charge client calls are erroring and the
+# payment server is receiving none. The two queries live in evidence.py.
+UNREACHABLE_FLAG = "paymentUnreachable"
 RECOVERY_WINDOW_SECONDS = 300
 RECOVERY_PAUSE_SECONDS = 10
 # Pauses sit between polls, so the last poll lands on the window.
@@ -302,7 +306,13 @@ def _checkout_failures_still_arriving(tools) -> bool | None:
     return sample > 0
 
 
-def _applied_update(state, last_error: str) -> dict:
+def _applied_update(
+    state,
+    last_error: str,
+    *,
+    signal: str = "demo_payment_transactions_total",
+    ref: str = RECOVERY_QUERY,
+) -> dict:
     detail = "verify applied, not yet verified"
     if last_error:
         detail = f"{detail}: {last_error}"
@@ -310,8 +320,8 @@ def _applied_update(state, last_error: str) -> dict:
         state,
         recovered=False,
         pending=True,
-        signal="demo_payment_transactions_total",
-        ref=RECOVERY_QUERY,
+        signal=signal,
+        ref=ref,
         detail=detail,
     )
 
@@ -357,6 +367,51 @@ def _verify_recovery_query(state, tools, *, attempts: int, pause) -> dict:
     return _applied_update(state, last_error)
 
 
+def _verify_unreachable(state, tools, *, attempts: int, pause) -> dict:
+    """Poll the Charge pair across the same five-minute window.
+
+    Checkout client errors stay in the rate after the flag is cleared, so a
+    server Charge rate above zero is recovery and returns immediately. The
+    last poll is the failure check the fault is named by: client errors still
+    above zero while the payment server Charge rate is still zero. Both zero,
+    or a query that cannot be read, stays applied.
+    """
+    last_error = ""
+    for attempt in range(attempts):
+        reading = _promql(tools, SERVER_CHARGE)
+        server = _sample(reading)
+        if server is None:
+            last_error = str(reading.get("error") or "promql returned no sample")
+        elif server > 0:
+            return _verify_update(
+                state,
+                recovered=True,
+                pending=False,
+                signal="SPAN_KIND_SERVER",
+                ref=SERVER_CHARGE,
+                detail="verify recovered=True",
+            )
+        else:
+            last_error = ""
+        if server == 0 and attempt + 1 == attempts:
+            client_reading = _promql(tools, CLIENT_CHARGE)
+            client = _sample(client_reading)
+            if client is None:
+                last_error = "checkout charge query returned no sample"
+            elif client > 0:
+                return _verify_update(
+                    state,
+                    recovered=False,
+                    pending=False,
+                    signal="SPAN_KIND_CLIENT",
+                    ref=CLIENT_CHARGE,
+                    detail="verify recovered=False",
+                )
+        if attempt + 1 < attempts:
+            pause()
+    return _applied_update(state, last_error, signal="SPAN_KIND_SERVER", ref=SERVER_CHARGE)
+
+
 def _scripted_recovery(state, shop) -> dict:
     """The fixture has no lag. A flag left armed is a failed fix and rolls back."""
     reading = shop.metrics()
@@ -380,21 +435,27 @@ def verify_metrics(state, shop, tools=None, *, attempts: int | None = None, paus
     out the five-minute window, so the rate no longer contains samples from
     before the fix. Still zero then, with checkout 422s still arriving, is a
     failed fix and takes the rollback edge. Still zero with a quiet checkout
-    stays applied, and the flag is not rolled back. Any other case reads the
-    scripted shop, whose rate moves the moment the fixture flag changes.
+    stays applied, and the flag is not rolled back.
+
+    A live ``paymentUnreachable`` run polls the same window. A payment server
+    Charge rate above zero returns recovered immediately. On the last poll,
+    checkout Charge client errors still above zero while that server rate is
+    still zero is a failed fix and takes the rollback edge. Both zero, or a
+    query that cannot be read, stays applied.
+
+    Any other case reads the scripted shop, whose rate moves the moment the
+    fixture flag changes.
     """
     action = state.get("proposed_action") or {}
     flag = (action.get("args") or {}).get("flag")
-    if tools is not None and "promql" in tools and flag == RECOVERY_FLAG:
+    if tools is not None and "promql" in tools and flag in {RECOVERY_FLAG, UNREACHABLE_FLAG}:
         waits = RECOVERY_POLLS if attempts is None else attempts
         if waits < 1:
             raise ValueError("recovery polls must be at least 1")
-        return _verify_recovery_query(
-            state,
-            tools,
-            attempts=waits,
-            pause=pause or (lambda: time.sleep(RECOVERY_PAUSE_SECONDS)),
-        )
+        pause_fn = pause or (lambda: time.sleep(RECOVERY_PAUSE_SECONDS))
+        if flag == UNREACHABLE_FLAG:
+            return _verify_unreachable(state, tools, attempts=waits, pause=pause_fn)
+        return _verify_recovery_query(state, tools, attempts=waits, pause=pause_fn)
     return _scripted_recovery(state, shop)
 
 
