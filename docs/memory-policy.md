@@ -170,6 +170,47 @@ restating them, so the next rewording fails a test instead of quietly emptying t
 Expressing alternatives in one precondition would remove the duplication, and that is
 `precondition_matches` — P2's file, and the open ask in CONTRIBUTING.md.
 
+### What earns `approved` on a seed lesson
+
+The seed corpus is now the full **10 postmortems** the project guide asks for: 17 lessons,
+**11 approved, 4 inferred, 2 rejected**. Only 2 of the 18 fault runbooks carry
+`status: verified` — `payment-failure` and `payment-unreachable` — so most of the corpus
+describes faults nobody here has yet injected. Writing ten confident postmortems about
+telemetry we have never looked at would have produced a corpus that reads well and lies.
+
+The rule used instead, and the one to keep using:
+
+> A seed lesson may be **approved** when the evidence that discriminates it is readable
+> *now* — a variant list in `deploy/flagd/demo.flagd.json`, a fact in `deploy/Makefile`
+> or a compose file, a decision record, or a verified live run. A lesson whose evidence is
+> a **metric or trace signature nobody has observed** stays `inferred`, however sound the
+> reasoning looks.
+
+`inferred` is not a lesser draft. The store serves `approved` only, so an inferred lesson
+is written down, reviewable, and invisible to the model — which is exactly right for a
+claim we cannot yet support. Promote it by running the fault and reading the series, not
+by re-reading the runbook.
+
+Worked pair, from `inc-2026-11-05-01`: *"read which of the two product-catalog flags is
+set"* is approved, because both flags are in the flag document. *"latency rises while CPU
+stays flat"* is inferred, because no one has plotted that CPU series. The second is the
+more useful diagnostic insight, and it is the one the agent may not see.
+
+`paymentUnreachable` now has a lesson of its own, `les-absent-spans-are-not-failing-spans`,
+keyed on `payment service is unavailable`. All three payment registers keep a different
+lesson, and the `COVERAGE` row that recorded that gap as honest is now `True`.
+
+**Disclosed to P4:** the memory-on arm is materially stronger than it was. Eleven approved
+lessons across nine services mean most alerts the evaluator posts will now match a lesson,
+where before only `payment-failure` and `checkout` did. The memory-off arm is unchanged.
+Any E4 ablation run against the old corpus is not comparable to one run against this.
+
+**Not yet decided:** `tests/test_guards.py::test_postmortems_are_not_in_the_retrieval_index`
+holds the postmortems out of the retrieval index so that Recall@5 over 18 documents stays
+comparable across runs, and it says they join "strictly before the first scored run or
+strictly after the last". The corpus being complete is the moment that choice becomes
+live. It is a retrieval decision, not a memory one, and it is not taken here.
+
 ## Evaluation boundary
 
 **Memory is reset between evaluation cases.** Without that, a lesson learned on case 7 changes

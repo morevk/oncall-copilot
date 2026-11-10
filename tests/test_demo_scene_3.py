@@ -39,7 +39,8 @@ def test_the_matching_lesson_is_kept_and_the_stale_ones_are_dropped() -> None:
 
     The pin is exhaustive ON PURPOSE, and it carries a known maintenance cost:
     every new seed postmortem whose lessons do not fit CASE lands in this list,
-    and the corpus is 3 of 10. Pay that cost rather than weaken the assertion.
+    and the corpus is now the full 10. Pay that cost rather than weaken the
+    assertion: ten refusals and one keep is what the scene has to show.
     A membership check cannot see a lesson that starts being DROPPED when it
     should be kept, and it cannot see the order change -- both are regressions
     this file exists to catch.
@@ -48,9 +49,16 @@ def test_the_matching_lesson_is_kept_and_the_stale_ones_are_dropped() -> None:
 
     assert [lesson["id"] for lesson in kept] == ["les-read-the-flag-baseline-first"]
     assert [lesson["id"] for lesson in dropped] == [
+        "les-a-multiplier-variant-is-not-a-boolean",
+        "les-a-proportional-fault-reads-as-flaky-clients",
         "les-a-soft-limit-never-fails",
+        "les-absent-spans-are-not-failing-spans",
         "les-confirm-the-variant-the-page-names",
         "les-health-check-names-a-binary",
+        "les-minimal-mode-makes-this-fault-impossible",
+        "les-one-service-two-faults-read-the-flag-pair",
+        "les-the-delay-variant-names-the-duration",
+        "les-the-healthcheck-patch-hides-cache-degradation",
     ]
 
 
@@ -92,14 +100,23 @@ def test_nothing_unreviewed_or_refused_ever_reaches_the_graph() -> None:
 
 
 def test_the_rejected_lesson_is_a_deliverable_and_stays_out_of_the_run() -> None:
-    """One rejected lesson with its reason is required by the project guide. It
-    must be visible to a person and invisible to the agent."""
-    store = playbook()
-    (refused,) = store.rejected()
-    kept, dropped = load_lessons(store, **CASE)
+    """At least one rejected lesson with its reason is required by the project
+    guide. Every refusal must be visible to a person and invisible to the agent.
 
-    assert refused["reason"]
-    assert refused["id"] not in [lesson["id"] for lesson in kept + dropped]
+    This iterates rather than unpacking a single refusal. The guide asks for one;
+    it does not ask for exactly one, and pinning the count made the second
+    refusal -- inc-2026-11-03-01, where the payment charge-path lesson is wrong
+    -- look like a broken test instead of a second worked example.
+    """
+    store = playbook()
+    refusals = store.rejected()
+    kept, dropped = load_lessons(store, **CASE)
+    reached = [lesson["id"] for lesson in kept + dropped]
+
+    assert refusals, "the guide requires a refused lesson, kept with its reason"
+    for refused in refusals:
+        assert refused["reason"], f"{refused['id']} was refused with no reason recorded"
+        assert refused["id"] not in reached, f"{refused['id']} reached the graph"
 
 
 def test_the_team_runbook_drops_the_stale_lessons_and_says_why() -> None:
@@ -133,9 +150,16 @@ def test_the_team_runbook_drops_the_stale_lessons_and_says_why() -> None:
 
     assert [lesson["id"] for lesson in result["lessons"]] == ["les-read-the-flag-baseline-first"]
     assert result["dropped_lessons"] == [
+        "les-a-multiplier-variant-is-not-a-boolean",
+        "les-a-proportional-fault-reads-as-flaky-clients",
         "les-a-soft-limit-never-fails",
+        "les-absent-spans-are-not-failing-spans",
         "les-confirm-the-variant-the-page-names",
         "les-health-check-names-a-binary",
+        "les-minimal-mode-makes-this-fault-impossible",
+        "les-one-service-two-faults-read-the-flag-pair",
+        "les-the-delay-variant-names-the-duration",
+        "les-the-healthcheck-patch-hides-cache-degradation",
     ]
     assert (
         "dropped lesson les-a-soft-limit-never-fails: precondition service product-catalog != payment"
@@ -173,12 +197,11 @@ def test_the_team_runbook_drops_the_stale_lessons_and_says_why() -> None:
 COVERAGE = {
     "PAYMENT_CHARGE_REQUESTS_ALERT": (PAYMENT_CHARGE_REQUESTS_ALERT, True),
     "CHECKOUT_ALERT": (CHECKOUT_ALERT, True),
-    # Honest gap, not a failure: `paymentUnreachable` has no postmortem in the
-    # corpus (3 of 10 written), so memory has nothing to say about it. Flip this
-    # to True when that write-up lands, and do NOT fix it by widening an
-    # existing lesson -- `payment service is unavailable` is a different fault
-    # with a different first read.
-    "PAYMENT_UNAVAILABLE_ALERT": (PAYMENT_UNAVAILABLE_ALERT, False),
+    # Was an honest gap until inc-2026-11-03-01 was written up. It is closed by
+    # a lesson of its OWN -- `les-absent-spans-are-not-failing-spans` -- and not
+    # by widening a payment-failure lesson, which is what the comment here used
+    # to warn against. All three payment registers now keep a different lesson.
+    "PAYMENT_UNAVAILABLE_ALERT": (PAYMENT_UNAVAILABLE_ALERT, True),
 }
 
 
