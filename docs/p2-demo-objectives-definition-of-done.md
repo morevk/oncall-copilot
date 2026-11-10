@@ -1,7 +1,7 @@
 # P2 definition of done for the three demo objectives
 
 **Written 2026-11-08, assessed against `main` at `a689680`. Re-checked 2026-11-10 on `team-graph`
-at `837ebc7`, which includes `main` at `2121b74`.** For P2, who owns `packages/oncall-graph`. This
+at `3b6c796` (local, not yet pushed to the fork), which includes `main` at `e18eb85`.** For P2, who owns `packages/oncall-graph`. This
 turns the P2 rows of [`demo-objectives-gap-analysis.md`](demo-objectives-gap-analysis.md) into a
 checklist and records how much of it the code already meets. That analysis was read against
 `600479e`; everything below was re-checked against the current tree, and the tests named here were
@@ -24,6 +24,22 @@ to `off`, with `verified_recovery` true and `rolled_back` false. It returned on 
 Charge sample above zero, so it did not wait out the window. Earlier,
 `smoke-payment-unavailable-ca45b6a2` had stopped at `AWAITING_APPROVAL`, before this verify
 existed.
+
+The catalog flag (`productCatalogFailure`) is not one of the two payment flags, so its live verify
+is scripted and reads no recovery signal. Three runs on 2026-11-10 covered that path.
+`probe-catalog-d8102c85`, run before the smoke test file existed, approved `set_flag` `off`, got
+`verify recovered=False`, rolled back to `on`, replanned, and stopped at a second
+`AWAITING_APPROVAL` that was not approved. `smoke-product-catalog-40a6bac4` did the same and stopped
+at the second approval after 28 of 40 tools. `smoke-product-catalog-d8b0621a` rolled back and
+replanned, then triage hit `budget exhausted` at 37 tools, and the run ended `ESCALATED`. Its
+`system_run` shows `rolled_back` true, `verified_recovery` false, and `executed_actions` `set_flag`
+`off` then `rollback_flag` `on`. In each run the flag was armed to `on` first and set back to `off`
+afterward. A flag already at `off` now skips `rollback_flag` and still takes the replan edge
+(`cbaf4e5`, `test_a_scripted_miss_on_another_flag_replans_without_restoring_off`). The live smoke is
+`tests/test_product_catalog_failure_alert_live_smoke.py`, renamed from
+`packages/oncall-service/tests/test_product_catalog_failure_live_smoke.py` (`3b6c796`). It arms and
+disarms the flag itself, and accepts either the second approval or budget escalation. No catalog
+run recovered, so the score does not change.
 
 **Score: 26 of 28 done.** Objective 1 is what remains. Objective 2 is done in code
 ([ADR-0007](decisions/0007-no-service-actions.md)); the log line itself is still P1's to put
@@ -58,7 +74,8 @@ runbook path still uses the fixture. Neither is counted below.
 | 1.5 | `agent._as_langchain_tool` grows its third branch, so an MCP tool reaches a specialist. | **Done.** The third branch passes the server's JSON Schema as `args_schema` and uses `invoke` as the function (`agent.py`). `test_tool_adapter.py`. Commit `af1177a`. |
 | 1.6 | `build_graph` stops refusing a tool registry, and the service passes a registry instead of `LiveShop()`. | **Done.** `build_graph` accepts a `ToolRegistry` and reads from it (`build.py`). With a registry (`MCP_TRANSPORT` set), `_open_runner` still builds a plain `Shop()` and passes the registry alongside it. Without one it builds `LiveShop()` (`main.py`). Commits `0e61290`, `1e8e7a5`. `test_registry_wiring.py`, `test_service.py`. |
 | 1.7 | `apply` writes the flagd document through `mcp-ops-actions`, which already takes `{flag, variant}` and returns `previous`. | **Done.** `LiveShop.apply` calls `set_flag` and `rollback_flag` from `ops_actions` (`astronomy_shop.py`). On the service path, `execute` and `rollback` call the same two tools on the registry (`nodes/remediate.py`, `apply_through`). The scripted `Shop.apply` remains for graphs built without a registry. Approved writes are recorded on `IncidentChannel.executed_writes` (`837ebc7`), and the run record reads that list. The registry path no longer appends to `shop.writes`. The charge, checkout, and unavailable smokes after the rebuild list that write in `executed_actions`. |
-| 1.8 | `armed()` and `metrics()` read that document. A write that never lands must not read back as recovery. | **Partly done.** `LiveShop.armed()` reads the document. The service's shop is still a plain `Shop()`, and its `armed()` reads a mirror. The write audit no longer uses that shop (1.7). A live `paymentFailure` verify no longer uses that mirror: it uses the recovery query in 1.9, so a write that never lands leaves the rate at zero and is not `RECOVERED`. A live `paymentUnreachable` verify uses the Charge pair in 1.9. Flags other than these two still use the scripted rate. Not counted in the score. |
+| 1.8 | `armed()` and `metrics()` read that document. A write that never lands must not read back as recovery. | **Partly done.** `LiveShop.armed()` reads the document. The service's shop is still a plain `Shop()`, and its `armed()` reads a mirror. The write audit no longer uses that shop (1.7). A live `paymentFailure` verify no longer uses that mirror: it uses the recovery query in 1.9, so a write that never lands leaves the rate at zero and is not `RECOVERED`. A live `paymentUnreachable` verify uses the Charge pair in 1.9. Flags other than these two still use the scripted rate, and a miss on them now rolls back and
+replans (`cbaf4e5`). The catalog runs are listed under the score. Not counted in the score. |
 | 1.9 | `verify_metrics` runs the fault's recovery query instead of `shop.metrics()`. | **Done** for `paymentFailure`. The query is `sum(rate(demo_payment_transactions_total[5m])) > 0`, from `eval/faults/manifest.yaml`, read through the registry's `promql` (`nodes/remediate.py`). A graph with no `promql` still uses `shop.metrics()`. `test_a_live_payment_fix_recovers_when_transactions_resume`. The charge and checkout smokes on 2026-11-10 finished `RECOVERED` on this query. `paymentUnreachable` polls `SERVER_CHARGE` and, on the last poll, `CLIENT_CHARGE`, both from `evidence.py`. A server Charge rate above zero is `RECOVERED` (`test_an_unreachable_fix_recovers_when_the_server_takes_charges`). `smoke-payment-unavailable-70fc21ce` finished `RECOVERED` on that signal. A graph with no `promql` still uses `shop.metrics()` for this flag too. |
 | 1.10 | **Decision.** A 5-minute rate cannot confirm recovery instantly. Verification either polls, or the run reports "applied, not yet verified". | **Done.** Polls ten seconds apart until the window has elapsed (31 polls). One success returns `RECOVERED` immediately. On the last poll, checkout 422s still arriving is a failed fix and takes the rollback edge (`test_a_live_payment_fix_rolls_back_when_checkout_failures_continue`). A zero success rate with a quiet checkout is `APPLIED`, and the flag stays (`test_a_live_payment_fix_waits_out_and_does_not_roll_back`). The two live `paymentFailure` smokes and `smoke-payment-unavailable-70fc21ce` recovered before the window elapsed. Rollback and `APPLIED` are covered by the unit tests, not by the live runs. |
 | 1.11 | `search_runbooks` reads `mcp-runbooks`. The three fixture passages name `paymentFailure`, so a diagnosis that cites them cannot be wrong. | **Partly done.** On the service path, `search_runbooks` hits from `mcp-runbooks` become passages, and a missing fix is loaded with `get_runbook` (`handoffs.py`, `052a341`). The checkout smoke reached `RECOVERED` through that path. The scripted path still uses the stub fixture (`stubs.py`), and no test pins the citation. Not counted in the score. |
@@ -123,7 +140,8 @@ P1 owns the store and the seed postmortems, and both landed in commit `7884566`.
    approved `set_flag` and finished `RECOVERED` on the payment server Charge rate.
 3. What remains in Objective 1 is partial: 1.8 (the service shop's `armed()` still reads a
    mirror; flags other than `paymentFailure` and `paymentUnreachable` still verify on the
-   scripted rate) and 1.11 (the scripted runbook path still uses the fixture).
+   scripted rate; a miss on them now rolls back and replans) and 1.11 (the scripted runbook path
+   still uses the fixture).
 
 `_open_runner` in `packages/oncall-service/src/oncall_service/main.py` now builds the team with
 the playbook. That file is in P5's package. The gap analysis assigns the change to P2.
@@ -140,4 +158,11 @@ uv run pytest tests/test_demo_scene_3.py \
               packages/oncall-graph/tests/test_evidence.py \
               packages/oncall-graph/tests/test_team.py \
               packages/oncall-service/tests/test_service.py -q
+```
+
+The rollback skip and the scripted-miss replan tests:
+
+```bash
+uv run pytest packages/oncall-graph/tests/test_solo.py packages/oncall-graph/tests/test_team.py \
+  packages/oncall-graph/tests/test_state_plan.py -q
 ```
