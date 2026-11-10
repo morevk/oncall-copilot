@@ -421,6 +421,94 @@ during every incident it exists to resolve.
 **Its own Dockerfile**, `Dockerfile.ops-actions`, with no `semantic` extra: 344 MB against
 `mcp-runbooks`' 1.66 GB. Build-only in `make images` because its runtime needs that mount.
 
+## `mcp-tickets`: the fourth server, and the one write that is not a shop write
+
+**P1 proposes this contract; P3 owns the server.** Same split as the `mcp-runbooks` contract
+above. P1 will not write `oncall_tools/servers/tickets/`, and will not add the `SERVERS` entry or
+edit the `registry.py:61` placeholder — that comment states the rule itself ("Adding a server is
+one entry here, in the commit that adds the server"), so both belong to P3's implementing commit.
+
+Reserved: port **8103**, module `oncall_tools.servers.tickets`.
+
+The design decision and its reasoning are in
+[ADR-0009](docs/decisions/0009-the-incident-record-is-a-write.md). The short version: a record
+that persists is a write, there is no third tool class between read and write, so one tool is a
+write and goes through the gate we already have. `mcp-ops-actions` remains the only server that
+writes to **the shop**.
+
+Three reads and one write:
+
+```python
+# read -- any role
+get_incident(incident_id: str) -> Incident
+list_incidents(service: str = "", limit: int = 20) -> list[IncidentSummary]
+draft_status_update(incident_id: str, audience: str = "internal") -> StatusDraft
+
+# write -- remediation only, refused by hooks.pre_tool without a matching Approval
+record_incident(incident_id: str, record: IncidentRecord) -> Incident
+```
+
+```python
+IncidentRecord = {
+    "service": str,  # the service the accepted hypothesis names
+    "severity": str,  # sev1 | sev2 | sev3, from the runbook
+    "hypothesis": str,  # the model's sentence, labelled as the model's
+    "action": dict,  # the exact {flag, variant} payload that was approved
+    "approval_fingerprint": str,  # ties this record to the gate that let the action through
+    "verified": bool,  # did the recovery query clear
+    "lessons_applied": list[str],  # lesson ids the playbook kept, [] when memory said nothing
+    "rolled_back": bool,
+}
+
+StatusDraft = {
+    "subject": str,
+    "body": str,
+    "fields_used": list[str],  # which record keys composed it, so the draft is auditable
+}
+```
+
+Five constraints the contract pins, and why each one:
+
+**The draft is composed from `IncidentRecord` fields only — never from raw log lines or span
+text.** This is a security property. The guide requires secrets redacted before any model sees a
+log and there is no redaction code in this tree yet, so a draft that quoted a log line would
+carry whatever was in it into human-facing prose and, via the transcript, back into the model's
+context. `fields_used` exists so the rule is checkable from the output rather than trusted.
+
+**There is no publish, send, or notify tool.** Publishing is a change to the outside world in the
+guide's sense and would need its own payload, its own approval and an argument about which
+external system. The brief says *status draft*. Returning text and transmitting nothing is the
+whole intent.
+
+**`incident_id` is minted by the service, not by a tool.** `main.py:584` sets
+`f"alert-{uuid.uuid4().hex[:12]}"` before any tool is called, so there is no `open_incident`, the
+server holds no state machine, and a failed run cannot leave a half-open incident behind.
+
+It is a random uuid per run, **not** a fingerprint of the alert, so two runs against the same
+firing alert produce two records. Append-only makes that the safe failure, but the journal keys
+on run rather than on alert. **Ask to P2/P5:** derive `incident_id` from the alert's labels and
+`startsAt` if one ticket per alert is wanted. That is a change in `oncall-service` and is nobody
+else's to make.
+
+**`record_incident` is append-only.** A second call for an `incident_id` that already has a
+record raises; it does not overwrite and does not merge. An audit trail the audited thing can
+rewrite is not one.
+
+**`approval_fingerprint` is required, not optional.** It is the same fingerprint `hooks.pre_tool`
+matched to let `set_flag` through. A record whose action nobody approved cannot be written, so
+the ticket cannot claim more than the gate allowed.
+
+### What this server does not do
+
+It does not read the evaluator's run database. `oncall-eval` persists `RunRecord`s and sits
+behind the oracle boundary; a path from the agent's incident record into that store is the
+cheating route `oncall_memory.reflexion` exists to prevent. The incident journal is its own
+append-only store, and `artifacts/` is gitignored except `!artifacts/retrieval/`, so whether one
+worked record is committed for the review is P3's and P5's call (ADR-0009).
+
+It does not filter on `status`, hold opinions about severity, or decide whether an incident is
+closed. Those are the commander's.
+
 ## `oncall-memory`: the playbook, and what code refuses to apply
 
 P1's. `docs/memory-policy.md` governs it; this is what the code does.
