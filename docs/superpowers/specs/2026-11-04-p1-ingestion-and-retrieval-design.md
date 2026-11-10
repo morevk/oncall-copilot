@@ -376,6 +376,12 @@ with no error anywhere.
 **Non-goals:** persistence, a vector database, reranking, query expansion, multi-hop retrieval,
 chunking, answer generation.
 
+> **Amended 2026-11-10 by [ADR-0008](../../decisions/0008-reranking-and-query-rewriting.md).**
+> *Reranking* and *query expansion* are no longer non-goals. Reranking ships as config C with a
+> measured headroom of +0.2535 on `Recall@1`; query rewriting ships as config D, built and
+> deliberately unscored until an author-independent query set exists. The remaining non-goals on
+> this line stand.
+
 **Anti-goals** — these would mean failure even with good numbers:
 
 - A Recall@5 improvement that comes from the index seeing the queries.
@@ -402,6 +408,14 @@ chunking, answer generation.
 2. Do the 8 unwritten seed postmortems land before the experiment? 18 → 26 documents does more
    for metric discrimination than any retrieval change, but it also changes the corpus mid-
    experiment, so it happens strictly before A or strictly after B.
+
+   > **Answered 2026-11-10.** All ten landed in PR #41, so the arithmetic is 18 → 28, not 26.
+   > They are held *out* of the index by
+   > `tests/test_guards.py::test_postmortems_are_not_in_the_retrieval_index`, and per
+   > [ADR-0008](../../decisions/0008-reranking-and-query-rewriting.md) they stay out until
+   > configs C and D are measured — `compare()` refuses runs whose `n_documents` differs, so
+   > indexing them first would make the B→C comparison impossible to run. "Strictly after B"
+   > now means strictly after D.
 
 ---
 
