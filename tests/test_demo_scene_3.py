@@ -13,9 +13,15 @@ scene to show anything.
 
 from __future__ import annotations
 
+import pytest
 from oncall_graph.handoffs import load_lessons, runbook_guidance
 from oncall_graph.state import new_incident
 from oncall_graph.stubs import Shop
+from oncall_graph.team_demo import (
+    CHECKOUT_ALERT,
+    PAYMENT_CHARGE_REQUESTS_ALERT,
+    PAYMENT_UNAVAILABLE_ALERT,
+)
 from oncall_graph.topologies.c2_team import Team
 from oncall_memory import APPLICABLE_STATUS, LessonStore
 
@@ -29,11 +35,21 @@ def playbook() -> LessonStore:
 
 
 def test_the_matching_lesson_is_kept_and_the_stale_ones_are_dropped() -> None:
+    """Exactly one lesson is kept, and exactly these three are refused, in order.
+
+    The pin is exhaustive ON PURPOSE, and it carries a known maintenance cost:
+    every new seed postmortem whose lessons do not fit CASE lands in this list,
+    and the corpus is 3 of 10. Pay that cost rather than weaken the assertion.
+    A membership check cannot see a lesson that starts being DROPPED when it
+    should be kept, and it cannot see the order change -- both are regressions
+    this file exists to catch.
+    """
     kept, dropped = load_lessons(playbook(), **CASE)
 
     assert [lesson["id"] for lesson in kept] == ["les-read-the-flag-baseline-first"]
     assert [lesson["id"] for lesson in dropped] == [
         "les-a-soft-limit-never-fails",
+        "les-confirm-the-variant-the-page-names",
         "les-health-check-names-a-binary",
     ]
 
@@ -45,8 +61,19 @@ def test_a_dropped_lesson_carries_the_precondition_that_disqualified_it() -> Non
     _, dropped = load_lessons(playbook(), **CASE)
 
     for lesson in dropped:
-        assert lesson["preconditions"], f"{lesson['id']} was dropped with nothing to point at"
-        assert lesson["preconditions"]["service"] != CASE["service"]
+        preconditions = lesson["preconditions"]
+        assert preconditions, f"{lesson['id']} was dropped with nothing to point at"
+        # Not "the service differs": a lesson for THIS service with a symptom
+        # for another page in the same fault family is also correctly dropped,
+        # and the corpus has one. Asserting the service branch specifically
+        # would have made that drop look like a bug.
+        wrong_service = preconditions.get("service") != CASE["service"]
+        symptom = (preconditions.get("symptom") or "").lower()
+        hay = CASE["symptom"].lower()
+        wrong_symptom = bool(symptom) and symptom not in hay and hay not in symptom
+        assert wrong_service or wrong_symptom, (
+            f"{lesson['id']} was dropped but its preconditions fit {CASE}"
+        )
 
 
 def test_nothing_unreviewed_or_refused_ever_reaches_the_graph() -> None:
@@ -107,6 +134,7 @@ def test_the_team_runbook_drops_the_stale_lessons_and_says_why() -> None:
     assert [lesson["id"] for lesson in result["lessons"]] == ["les-read-the-flag-baseline-first"]
     assert result["dropped_lessons"] == [
         "les-a-soft-limit-never-fails",
+        "les-confirm-the-variant-the-page-names",
         "les-health-check-names-a-binary",
     ]
     assert (
@@ -117,10 +145,70 @@ def test_the_team_runbook_drops_the_stale_lessons_and_says_why() -> None:
         "dropped lesson les-health-check-names-a-binary: precondition service recommendation != payment"
         in lines
     )
+    # The symptom branch of `lesson_drop_line`, which no committed lesson reached
+    # until the payment family got a second register. A drop inside the right
+    # service is the discrimination this objective is actually about: a service
+    # match alone is the easy half. The id is pinned in the list above; this is
+    # the SENTENCE, which is the part the scene reads out loud.
+    assert (
+        "dropped lesson les-confirm-the-variant-the-page-names: precondition symptom "
+        "'payment service charge requests' does not match 'checkout error rate above 5% "
+        "for five minutes'" in lines
+    )
     guidance = runbook_guidance(result["passages"], result["lessons"])
     assert "les-read-the-flag-baseline-first" in guidance
     assert "read the flagd baseline" in guidance
     assert "les-a-soft-limit-never-fails" not in guidance
+
+
+#: What the playbook can and cannot speak to, per alert the demo actually posts.
+#: The alerts are IMPORTED, not restated, because the bug this table exists to
+#: catch was a rename: #33 made the payment-charge page the headline, its summary
+#: shares no substring with the checkout page, and the corpus quietly kept NOTHING
+#: on it. Nothing failed -- the scene just showed three rejections and no guidance,
+#: which does not distinguish a working filter from an empty playbook.
+#:
+#: The focus service is `payment` in every row because `focus_service` reads the
+#: hypothesis the diagnosis produced, and the runbook step runs after it.
+COVERAGE = {
+    "PAYMENT_CHARGE_REQUESTS_ALERT": (PAYMENT_CHARGE_REQUESTS_ALERT, True),
+    "CHECKOUT_ALERT": (CHECKOUT_ALERT, True),
+    # Honest gap, not a failure: `paymentUnreachable` has no postmortem in the
+    # corpus (3 of 10 written), so memory has nothing to say about it. Flip this
+    # to True when that write-up lands, and do NOT fix it by widening an
+    # existing lesson -- `payment service is unavailable` is a different fault
+    # with a different first read.
+    "PAYMENT_UNAVAILABLE_ALERT": (PAYMENT_UNAVAILABLE_ALERT, False),
+}
+
+
+@pytest.mark.parametrize("name", sorted(COVERAGE))
+def test_every_alert_the_demo_posts_has_a_stated_memory_outcome(name: str) -> None:
+    """Coverage of the playbook against the pages the demo really sends.
+
+    A lesson is kept only if its precondition names the register the page is
+    written in. Two of these pages are metrics prose and one quotes a flagd
+    variant description, so this is the test that notices when an alert is
+    reworded and the playbook silently stops matching it.
+    """
+    alert, should_keep = COVERAGE[name]
+    symptom = alert["annotations"]["summary"]
+
+    kept, dropped = load_lessons(playbook(), service="payment", symptom=symptom)
+
+    if should_keep:
+        assert kept, (
+            f"{name} keeps no lesson: summary {symptom!r} matches no precondition in the "
+            "corpus, so scene 3 shows rejections and no guidance on this page"
+        )
+        for lesson in kept:
+            assert lesson["statement"].strip(), f"{name} kept {lesson['id']} with no sentence"
+    else:
+        assert not kept, (
+            f"{name} now keeps {[lesson['id'] for lesson in kept]}. If that is a lesson "
+            "written for this fault, set its row in COVERAGE to True."
+        )
+    assert dropped, f"{name} dropped nothing, so the filter was not exercised at all"
 
 
 def test_an_empty_playbook_drops_nothing_and_raises_nothing() -> None:

@@ -457,21 +457,38 @@ ADR-0001 lesson applied to ADR-0002, where it sends you entirely the wrong way.
 `change_precedes_alert: true` would be a guard that looks checked and is not. The loader rejects
 the document rather than letting the corpus carry it.
 
-### This asks three things of P2, none of them made
+### Two of these three are now made; the third and a fourth are open
 
-1. **Inject the store.** `oncall-service` builds `Solo(shop=LiveShop())` directly
-   (`main.py:272`) and passes no store, so `load_lessons` returns two empty lists and scene 3
-   shows nothing. The service may import `oncall-memory` (the import rules were extended for
-   exactly this); the graph still may not, and does not need to.
-2. **Make `partition_lessons` fail closed.** It drops `rejected` and `pending` and defaults a
-   missing status to `approved`. The policy's status for an unreviewed candidate is `inferred`,
-   which is on neither list, so such a lesson is kept and shown as reviewed guidance. Keeping
-   only what is explicitly `approved` fixes it in one line.
+1. **Inject the store.** ~~`oncall-service` passes no store, so `load_lessons` returns two empty
+   lists and scene 3 shows nothing.~~ **Done in #36.** `_open_runner` builds
+   `Team(shop=shop, store=LessonStore.from_postmortems(), …)` for `c2_team`, and the run
+   record's `playbook_hash` is that store's hash.
+2. **Make `partition_lessons` fail closed.** ~~It drops `rejected` and `pending` and defaults a
+   missing status to `approved`, so an `inferred` lesson is kept and shown as reviewed
+   guidance.~~ **Done in #36.** Only an explicit `approved` is kept, and `lesson_drop_line`
+   puts the disqualifying precondition on the transcript. The test that pinned the fail-open is
+   inverted in `tests/test_reflexion_to_playbook.py`, which now proves the store and the filter
+   refuse an unreviewed lesson independently.
 3. **Decide where precondition evaluation goes next.** Only `service` and `symptom` are
    evaluated today, which is why the policy's own worked example had to be seeded as a
    **rejected** lesson: the precondition that would make it safe cannot be written in a form
    code checks. Widening `precondition_matches` is the prerequisite for approving lessons of
    that shape, and P1 will not widen the authoring rule first.
+4. **Pass the proposal log to the live store.** `_open_runner` calls
+   `LessonStore.from_postmortems()` with no `proposals`, so a lesson a person approved through
+   `python -m oncall_memory.review` never reaches a live run — the loop stops at
+   `artifacts/lessons.jsonl`. The change is one argument:
+   `LessonStore.from_postmortems(proposals=ProposalLog())`. Leaving it out is right for a
+   held-out evaluation, which freezes the playbook, so this may want to be conditional rather
+   than unconditional.
+
+   It matters for scene 3 beyond the loop. Measured against the committed corpus, the alert the
+   demo now posts (`PAYMENT_CHARGE_REQUESTS_ALERT`, summary `Fail payment service charge
+   requests n%`) keeps **no** lesson at all — all three drop, because
+   `les-read-the-flag-baseline-first` carries a checkout symptom. The scene then shows three
+   rejections and nothing kept, which does not distinguish "the filter rejects stale memory"
+   from "memory is empty". A reflexion-derived lesson takes its precondition symptom from the
+   alert that produced it, so it matches by construction.
 
 Scene 3's mechanism is proved end to end in `tests/test_demo_scene_3.py`, which lives in the
 root test tree because it imports both packages and `test_dependency_direction` scans package

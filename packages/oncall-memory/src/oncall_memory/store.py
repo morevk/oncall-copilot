@@ -4,11 +4,19 @@ The interface is the one `oncall_graph.handoffs.load_lessons` already expects --
 an object with `search(service, symptom, status)` -- so the graph never imports
 this package. `oncall-service` builds the store and injects it.
 
-READ ONLY, DELIBERATELY. There is no `add`, `approve` or `forget` here yet.
-Proposing a lesson and approving one are a human-in-the-loop path with its own
-gate, and `docs/memory-policy.md` is explicit that a lesson enters the playbook
-only through a person. Shipping the read side first means demo scene 3 works
-against a playbook nobody can accidentally grow mid-run.
+STILL READ ONLY, AND NOW FOR A SHARPER REASON. Writing lives in
+`oncall_memory.proposals`: reflexion appends a candidate, a person appends a
+decision, and this class reads the result. There is no `add` or `approve` HERE
+because a store that could grow itself is a store an incident could grow
+mid-run, and `docs/memory-policy.md` is explicit that a lesson enters the
+playbook only through a person.
+
+What this class now does is MERGE the two halves: the committed seed corpus in
+`data/postmortems/`, and the lessons a person has approved in the proposal log.
+Both arrive as `approved` lessons and are indistinguishable to the graph, which
+is right -- provenance is in `derived_from`, not in which file it came from.
+
+`forget(incident_id)` is the next change and belongs on the log, not here.
 """
 
 from __future__ import annotations
@@ -24,21 +32,46 @@ from .postmortems import (
     Postmortem,
     load_postmortems,
 )
+from .proposals import ProposalLog
 
 
 class LessonStore:
     """Every lesson the postmortems justify, queried by provenance status."""
 
-    def __init__(self, postmortems: tuple[Postmortem, ...] = ()) -> None:
+    def __init__(
+        self,
+        postmortems: tuple[Postmortem, ...] = (),
+        proposals: ProposalLog | None = None,
+    ) -> None:
         self._postmortems = tuple(postmortems)
-        self._lessons: tuple[Lesson, ...] = tuple(
-            lesson for postmortem in self._postmortems for lesson in postmortem.lessons
-        )
+        seeded = tuple(lesson for postmortem in self._postmortems for lesson in postmortem.lessons)
+        self._proposals = proposals
+        approved = tuple(proposals.lessons()) if proposals is not None else ()
+        # A proposal that reuses a seed lesson's id RAISES. Merging silently
+        # would let an approved proposal shadow a committed lesson -- including
+        # a committed REJECTED one, which is how a refused lesson would come
+        # back as guidance through a side door.
+        clash = {lesson.lesson_id for lesson in seeded} & {lesson.lesson_id for lesson in approved}
+        if clash:
+            raise ValueError(
+                f"lesson id(s) {sorted(clash)} are in both the committed corpus and the "
+                "proposal log: an approved proposal must not shadow a seed lesson, least "
+                "of all a rejected one."
+            )
+        self._lessons: tuple[Lesson, ...] = seeded + approved
 
     @classmethod
-    def from_postmortems(cls, directory: Path | None = None) -> LessonStore:
-        """Load `data/postmortems/*.md`. Raises `PostmortemError` on an invalid corpus."""
-        return cls(load_postmortems(directory))
+    def from_postmortems(
+        cls, directory: Path | None = None, proposals: ProposalLog | None = None
+    ) -> LessonStore:
+        """Load `data/postmortems/*.md`. Raises `PostmortemError` on an invalid corpus.
+
+        Pass a `ProposalLog` to include the lessons a person has approved. Left
+        out, the store is exactly the committed corpus -- which is what a
+        held-out evaluation run wants, since the policy freezes the playbook and
+        writes no new lessons during one.
+        """
+        return cls(load_postmortems(directory), proposals)
 
     def __len__(self) -> int:
         return len(self._lessons)

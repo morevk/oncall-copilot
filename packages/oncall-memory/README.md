@@ -18,8 +18,41 @@ store.search(service="payment", symptom="checkout error rate", status="approved"
 object with `search(service, symptom, status)` — so the graph never imports this package.
 The service constructs the store and injects it.
 
-**This package does not write.** Proposing a lesson, approving one and `forget(incident_id)`
-are later work; see `docs/demo-objectives-gap-analysis.md`.
+## The write side: propose, then a person decides
+
+```python
+from oncall_memory import LessonStore, ProposalLog, propose
+
+lesson = propose(run_record, alert="checkout error rate above 5%...", service="payment")
+lesson.status  # always "inferred" -- never guidance
+log = ProposalLog()  # artifacts/lessons.jsonl, append-only
+log.propose(lesson)
+```
+
+Then, as a person:
+
+```
+python -m oncall_memory.review list
+python -m oncall_memory.review approve les-4cf49afd --by you
+python -m oncall_memory.review reject  les-4cf49afd --by you --reason "too general"
+```
+
+An approved lesson joins the playbook and `playbook_hash` moves:
+`LessonStore.from_postmortems(proposals=log)` merges the committed corpus with what a person
+approved, and the graph cannot tell them apart — provenance is in `derived_from`, not in which
+file a lesson came from. Built **without** a log, the store is exactly the committed corpus,
+which is what a held-out run wants: the policy freezes the playbook and writes no new lessons
+during one.
+
+**`propose` reads a deliberately narrow slice of `RunRecord`.** Most of that contract is P4's
+scoring against a fault the harness injected, and a lesson derived from the answer key would be
+right because the grader said so. `OBSERVABLE_FIELDS` and `ORACLE_FIELDS` must partition the
+contract exactly, so a field added later fails a test until somebody classifies it. See
+*What reflexion may read* in `docs/memory-policy.md`.
+
+**The model writes one sentence and nothing else.** Every structured field is built by code,
+`preconditions` are restricted to the two keys the graph actually evaluates, and no drafter
+output can set a status. `forget(incident_id)` and supersede are the next change.
 
 ## The one thing to understand before changing `search`
 
