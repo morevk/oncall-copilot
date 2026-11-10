@@ -16,9 +16,14 @@ commits after `1e8e7a5` are on `team-graph` and are not yet on `main`. On 2026-1
 `verified_recovery` true and `rolled_back` false. Both returned on the first successes, so they
 did not wait out the five-minute window and did not exercise rollback. Earlier the same day,
 `smoke-payment-charge-fd68cc2e` (97s) and `smoke-checkout-6794cd7b` (57s) also recovered, before
-the run record read `executed_writes`. With `paymentUnreachable` armed and `paymentFailure` off,
-`smoke-payment-unavailable-ca45b6a2` stopped at `AWAITING_APPROVAL`. That verify still uses the
-scripted rate, so the smoke does not approve it.
+the run record read `executed_writes`. After the Charge-pair verify was added, with
+`paymentUnreachable` armed and `paymentFailure` off, `smoke-payment-unavailable-70fc21ce` was
+approved and finished `RECOVERED`
+on the payment server Charge rate in 125s. Its run record lists `set_flag` `paymentUnreachable`
+to `off`, with `verified_recovery` true and `rolled_back` false. It returned on the first server
+Charge sample above zero, so it did not wait out the window. Earlier,
+`smoke-payment-unavailable-ca45b6a2` had stopped at `AWAITING_APPROVAL`, before this verify
+existed.
 
 **Score: 26 of 28 done.** Objective 1 is what remains. Objective 2 is done in code
 ([ADR-0007](decisions/0007-no-service-actions.md)); the log line itself is still P1's to put
@@ -26,9 +31,11 @@ where `log_search` reads it. Objective 3 is shown on `c2_team`: the live team is
 playbook, a dropped lesson names the precondition that failed, and a lesson with no status is
 dropped.
 
-1.10 is settled: poll the recovery query until the five-minute window has elapsed. One success
-is recovered immediately. Still zero, with checkout 422s still arriving, rolls back. A quiet
-shop stays applied.
+1.10 is settled: poll until the five-minute window has elapsed. One success is recovered
+immediately. For `paymentFailure`, still zero with checkout 422s still arriving rolls back, and a
+quiet shop stays applied. For `paymentUnreachable`, a payment server Charge rate above zero is
+the success. On the last poll, checkout Charge client errors still above zero while that server
+rate is still zero rolls back. Both rates at zero stays applied.
 
 ---
 
@@ -50,10 +57,10 @@ runbook path still uses the fixture. Neither is counted below.
 | 1.4 | Approval binds to the payload hash. An edited payload or a stale hash interrupts again and writes nothing. | **Done.** `nodes/remediate.py`. |
 | 1.5 | `agent._as_langchain_tool` grows its third branch, so an MCP tool reaches a specialist. | **Done.** The third branch passes the server's JSON Schema as `args_schema` and uses `invoke` as the function (`agent.py`). `test_tool_adapter.py`. Commit `af1177a`. |
 | 1.6 | `build_graph` stops refusing a tool registry, and the service passes a registry instead of `LiveShop()`. | **Done.** `build_graph` accepts a `ToolRegistry` and reads from it (`build.py`). With a registry (`MCP_TRANSPORT` set), `_open_runner` still builds a plain `Shop()` and passes the registry alongside it. Without one it builds `LiveShop()` (`main.py`). Commits `0e61290`, `1e8e7a5`. `test_registry_wiring.py`, `test_service.py`. |
-| 1.7 | `apply` writes the flagd document through `mcp-ops-actions`, which already takes `{flag, variant}` and returns `previous`. | **Done.** `LiveShop.apply` calls `set_flag` and `rollback_flag` from `ops_actions` (`astronomy_shop.py`). On the service path, `execute` and `rollback` call the same two tools on the registry (`nodes/remediate.py`, `apply_through`). The scripted `Shop.apply` remains for graphs built without a registry. Approved writes are recorded on `IncidentChannel.executed_writes` (`837ebc7`), and the run record reads that list. The registry path no longer appends to `shop.writes`. The two smokes after the rebuild list that write in `executed_actions`. |
-| 1.8 | `armed()` and `metrics()` read that document. A write that never lands must not read back as recovery. | **Partly done.** `LiveShop.armed()` reads the document. The service's shop is still a plain `Shop()`, and its `armed()` reads a mirror. The write audit no longer uses that shop (1.7). A live `paymentFailure` verify no longer uses that mirror: it uses the recovery query in 1.9, so a write that never lands leaves the rate at zero and is not `RECOVERED`. Other flags still use the scripted rate. Not counted in the score. |
-| 1.9 | `verify_metrics` runs the fault's recovery query instead of `shop.metrics()`. | **Done** for `paymentFailure`. The query is `sum(rate(demo_payment_transactions_total[5m])) > 0`, from `eval/faults/manifest.yaml`, read through the registry's `promql` (`nodes/remediate.py`). A graph with no `promql` still uses `shop.metrics()`. `test_a_live_payment_fix_recovers_when_transactions_resume`. The charge and checkout smokes on 2026-11-10 finished `RECOVERED` on this query. |
-| 1.10 | **Decision.** A 5-minute rate cannot confirm recovery instantly. Verification either polls, or the run reports "applied, not yet verified". | **Done.** Polls ten seconds apart until the window has elapsed (31 polls). One success returns `RECOVERED` immediately. On the last poll, checkout 422s still arriving is a failed fix and takes the rollback edge (`test_a_live_payment_fix_rolls_back_when_checkout_failures_continue`). A zero success rate with a quiet checkout is `APPLIED`, and the flag stays (`test_a_live_payment_fix_waits_out_and_does_not_roll_back`). The two live `paymentFailure` smokes recovered before the window elapsed. Rollback and `APPLIED` are covered by those unit tests, not by the live runs. |
+| 1.7 | `apply` writes the flagd document through `mcp-ops-actions`, which already takes `{flag, variant}` and returns `previous`. | **Done.** `LiveShop.apply` calls `set_flag` and `rollback_flag` from `ops_actions` (`astronomy_shop.py`). On the service path, `execute` and `rollback` call the same two tools on the registry (`nodes/remediate.py`, `apply_through`). The scripted `Shop.apply` remains for graphs built without a registry. Approved writes are recorded on `IncidentChannel.executed_writes` (`837ebc7`), and the run record reads that list. The registry path no longer appends to `shop.writes`. The charge, checkout, and unavailable smokes after the rebuild list that write in `executed_actions`. |
+| 1.8 | `armed()` and `metrics()` read that document. A write that never lands must not read back as recovery. | **Partly done.** `LiveShop.armed()` reads the document. The service's shop is still a plain `Shop()`, and its `armed()` reads a mirror. The write audit no longer uses that shop (1.7). A live `paymentFailure` verify no longer uses that mirror: it uses the recovery query in 1.9, so a write that never lands leaves the rate at zero and is not `RECOVERED`. A live `paymentUnreachable` verify uses the Charge pair in 1.9. Flags other than these two still use the scripted rate. Not counted in the score. |
+| 1.9 | `verify_metrics` runs the fault's recovery query instead of `shop.metrics()`. | **Done** for `paymentFailure`. The query is `sum(rate(demo_payment_transactions_total[5m])) > 0`, from `eval/faults/manifest.yaml`, read through the registry's `promql` (`nodes/remediate.py`). A graph with no `promql` still uses `shop.metrics()`. `test_a_live_payment_fix_recovers_when_transactions_resume`. The charge and checkout smokes on 2026-11-10 finished `RECOVERED` on this query. `paymentUnreachable` polls `SERVER_CHARGE` and, on the last poll, `CLIENT_CHARGE`, both from `evidence.py`. A server Charge rate above zero is `RECOVERED` (`test_an_unreachable_fix_recovers_when_the_server_takes_charges`). `smoke-payment-unavailable-70fc21ce` finished `RECOVERED` on that signal. A graph with no `promql` still uses `shop.metrics()` for this flag too. |
+| 1.10 | **Decision.** A 5-minute rate cannot confirm recovery instantly. Verification either polls, or the run reports "applied, not yet verified". | **Done.** Polls ten seconds apart until the window has elapsed (31 polls). One success returns `RECOVERED` immediately. On the last poll, checkout 422s still arriving is a failed fix and takes the rollback edge (`test_a_live_payment_fix_rolls_back_when_checkout_failures_continue`). A zero success rate with a quiet checkout is `APPLIED`, and the flag stays (`test_a_live_payment_fix_waits_out_and_does_not_roll_back`). The two live `paymentFailure` smokes and `smoke-payment-unavailable-70fc21ce` recovered before the window elapsed. Rollback and `APPLIED` are covered by the unit tests, not by the live runs. |
 | 1.11 | `search_runbooks` reads `mcp-runbooks`. The three fixture passages name `paymentFailure`, so a diagnosis that cites them cannot be wrong. | **Partly done.** On the service path, `search_runbooks` hits from `mcp-runbooks` become passages, and a missing fix is loaded with `get_runbook` (`handoffs.py`, `052a341`). The checkout smoke reached `RECOVERED` through that path. The scripted path still uses the stub fixture (`stubs.py`), and no test pins the citation. Not counted in the score. |
 | 1.12 | `test_live_shop_reads_telemetry_and_keeps_stub_writes` is retired or rewritten. It asserts the in-memory write this objective removes. | **Done.** Rewritten as `test_live_shop_reads_telemetry_and_writes_the_document` in `packages/oncall-graph/tests/test_astronomy_shop.py`. |
 | 1.13 | `tests/test_apply_reaches_the_real_shop.py` passes. It pins 1.7, 1.8 and the refusals the seam buys: an invented flag, a re-arm through `set_flag`, and `restart`. | **Done, 7 of 7, no skips.** The file exercises `LiveShop`. It does not exercise the service's `Shop()` path, which is the gap in 1.8. |
@@ -112,10 +119,11 @@ P1 owns the store and the seed postmortems, and both landed in commit `7884566`.
    smoke (`smoke-checkout-cc5b51d6`, 49s) approved `set_flag` and finished `RECOVERED` before
    the five-minute window. Both run records carry that write in `executed_actions`.
    A live failure still rolls back only when checkout 422s are arriving after that window, and a
-   quiet shop stays applied. The unavailable alert stops at approval.
+   quiet shop stays applied. The unavailable smoke (`smoke-payment-unavailable-70fc21ce`, 125s)
+   approved `set_flag` and finished `RECOVERED` on the payment server Charge rate.
 3. What remains in Objective 1 is partial: 1.8 (the service shop's `armed()` still reads a
-   mirror; other flags still verify on the scripted rate) and 1.11 (the scripted runbook path
-   still uses the fixture).
+   mirror; flags other than `paymentFailure` and `paymentUnreachable` still verify on the
+   scripted rate) and 1.11 (the scripted runbook path still uses the fixture).
 
 `_open_runner` in `packages/oncall-service/src/oncall_service/main.py` now builds the team with
 the playbook. That file is in P5's package. The gap analysis assigns the change to P2.
