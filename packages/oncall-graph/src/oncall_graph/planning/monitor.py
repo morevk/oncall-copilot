@@ -24,6 +24,10 @@ from ..state import IncidentChannel, transcript_lines
 
 MONITOR_ROUTES = ("retry", "replan", "stop", "ready")
 
+# Every runbook fix sets this variant. rollback_flag refuses it, so calling
+# the tool raises and the graph never reaches replan.
+FIX_VARIANT = "off"
+
 
 def _result(state) -> dict:
     last = state.get("last") or {}
@@ -132,7 +136,10 @@ def code_rollback(state) -> dict:
         # pairs through the fix tool and refuses to re-arm a fault through it.
         previous = _previous_variant(state)
         flag = args.get("flag")
-        if previous and isinstance(flag, str) and flag.strip():
+        # A flag already at the fix has nothing to restore. The rollback node
+        # still runs, and its edge is replan. Calling rollback_flag with "off"
+        # raises before that edge.
+        if previous and previous != FIX_VARIANT and isinstance(flag, str) and flag.strip():
             return {"tool": "rollback_flag", "args": {"flag": flag, "variant": previous}}
         return {}
     return {}

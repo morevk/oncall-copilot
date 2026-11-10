@@ -513,6 +513,100 @@ def test_execute_and_rollback_call_the_registry_tools_not_the_fixture():
     assert shop.flags["paymentFailure"] == "100%"
 
 
+CATALOG_ACTION = {
+    "action": "set_flag",
+    "args": {"flag": "productCatalogFailure", "variant": "off"},
+    "expected_effect": "product pages load",
+    "rollback": "rollback_flag productCatalogFailure to its previous variant",
+}
+
+
+class _RefusingRollback:
+    def invoke(self, args):
+        raise AssertionError(args)
+
+
+class _AlreadyOff:
+    def __init__(self):
+        self.calls = []
+
+    def invoke(self, args):
+        self.calls.append(dict(args))
+        return {
+            "flag": args["flag"],
+            "variant": args["variant"],
+            "previous": "off",
+            "changed": False,
+        }
+
+
+class _CatalogRegistry:
+    def __init__(self):
+        self.set_flag = _AlreadyOff()
+        self.rollback_flag = _RefusingRollback()
+
+    def __contains__(self, name):
+        return name in {"set_flag", "rollback_flag"}
+
+    def __getitem__(self, name):
+        return getattr(self, name)
+
+
+def test_a_scripted_miss_on_another_flag_replans_without_restoring_off():
+    """The fixture rate does not describe this flag, so verify fails. The flag
+    was already off, and rollback_flag refuses that variant. The rollback node
+    still hands the run to replan."""
+    registry = _CatalogRegistry()
+    shop = Shop()
+    accepted = new_incident(plan={"stage": "act"}, proposed_action=CATALOG_ACTION)
+    accepted["approval_payload_hash"] = payload_hash(command_payload(CATALOG_ACTION))
+    ran = execute_action_code(accepted, shop, registry)
+    state = dict(accepted)
+    state.update(ran)
+    verified = verify_metrics(state, shop, registry)
+
+    assert verified["verification"]["recovered"] is False
+    assert route_verify(verified) == "rollback"
+    state.update(verified)
+    rolled = rollback_code(state, shop, registry)
+
+    assert registry.set_flag.calls == [{"flag": "productCatalogFailure", "variant": "off"}]
+    assert rolled["route"] == "replan"
+    assert rolled["pending_rollback"] == {}
+    assert "executed_writes" not in rolled
+    assert rolled["last"]["result"]["skipped"] is True
+
+
+def test_a_scripted_miss_on_another_flag_reaches_replan():
+    solo = Solo(
+        model=Scripted(
+            [
+                _call(
+                    "set_flag",
+                    {
+                        "flag": "productCatalogFailure",
+                        "variant": "off",
+                        "expected_effect": "product pages load",
+                    },
+                    "c1",
+                ),
+                _text("narrowing the fault"),
+            ]
+        )
+    )
+    solo.run(ALERT)
+    done, _ = solo.run(resume={"decision": "approve"})
+
+    assert solo.shop.writes == [
+        {"tool": "set_flag", "args": {"flag": "productCatalogFailure", "variant": "off"}},
+    ]
+    assert done["verification"]["recovered"] is False
+    assert done["pending_rollback"] == {}
+    assert done["revisions"] == 1
+    rollback_at = texts(done).index("rollback")
+    assert rollback_at < texts(done).index("replan")
+
+
 def test_failed_verification_rolls_back_then_replans():
     solo = Solo(
         model=Scripted(
