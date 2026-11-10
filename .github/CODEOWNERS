@@ -1,0 +1,74 @@
+# Who reviews what. One owner per graded component, because the viva is
+# individual: each owner defends their own package, so a change inside someone
+# else's package is a change they cannot defend.
+#
+# NOTE ON ENFORCEMENT: this file currently only auto-requests reviewers. `main`
+# has no branch protection and no ruleset, so a CODEOWNERS review is requested
+# and not required, and a direct push to `main` bypasses it entirely. Making it
+# binding is one ruleset -- "require a pull request" plus "require review from
+# Code Owners" -- and that is a deliberate decision, not an oversight.
+#
+# Last line wins in CODEOWNERS, so the fallback is first and the specific
+# paths come after.
+
+# Fallback: the repository owner, for anything not claimed below.
+*                                   @learntocode2013
+
+# ---------------------------------------------------------------------------
+# P1 — domain, knowledge & memory
+# ---------------------------------------------------------------------------
+/packages/oncall-knowledge/         @learntocode2013
+/packages/oncall-memory/            @learntocode2013
+/data/                              @learntocode2013
+/docs/memory-policy.md              @learntocode2013
+/docs/severity-policy.md            @learntocode2013
+/artifacts/retrieval/               @learntocode2013
+
+# ---------------------------------------------------------------------------
+# P2 — orchestration, planning & improvement
+# ---------------------------------------------------------------------------
+/packages/oncall-graph/             @morevk
+
+# ---------------------------------------------------------------------------
+# P3 — tools, human control & guardrails
+#
+# Includes the pre-tool hook and the MCP servers.
+#
+# NOMINAL OWNER: @rajabharathi29, who is not available. Reviews route to
+# @learntocode2013 instead, which is the same covering arrangement ADR-0004
+# already records -- P1 wrote that record while covering for P3, and it states
+# that P3 owns the code regardless of who writes it.
+#
+# @rajabharathi29 is deliberately NOT listed as a second owner here: GitHub
+# requests review from EVERY owner on a line, so naming an unavailable person
+# would park a pending review request on every tools PR and make the file look
+# like it is routing work that nobody is doing. Add them back when they return.
+# ---------------------------------------------------------------------------
+/packages/oncall-tools/             @learntocode2013
+
+# ---------------------------------------------------------------------------
+# P4 — evaluation & red team
+#
+# oncall-lab holds the fault manifest's root cause, so it sits behind the
+# oracle boundary with the rest of evaluation (ADR-0004 notes P4/P5 own it).
+# ---------------------------------------------------------------------------
+/packages/oncall-eval/              @ravishankarkumar
+/packages/oncall-lab/               @ravishankarkumar
+/eval/                              @ravishankarkumar
+
+# ---------------------------------------------------------------------------
+# P5 — deployment & observability
+# ---------------------------------------------------------------------------
+/packages/oncall-service/           @ravishankarkumar
+/deploy/                            @ravishankarkumar
+/.github/                           @ravishankarkumar
+
+# ---------------------------------------------------------------------------
+# Shared surfaces
+#
+# oncall-contracts is imported by every package and imports nothing, so a
+# change here reaches all five components. Two reviewers on purpose.
+# ---------------------------------------------------------------------------
+/packages/oncall-contracts/         @learntocode2013 @morevk
+/CONTRIBUTING.md                    @learntocode2013 @morevk
+/docs/decisions/                    @learntocode2013 @morevk
