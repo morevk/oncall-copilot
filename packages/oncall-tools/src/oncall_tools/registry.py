@@ -39,7 +39,7 @@ import threading
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import Future
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Self
 
 from mcp import StdioServerParameters
@@ -295,8 +295,34 @@ def _client(spec: ServerSpec, transport: Transport, host: str) -> Client:
     )
 
 
-def _spec_from(tool: Any, server: str, call: Callable[..., Any]) -> ToolSpec:
-    return ToolSpec(
+def _approval_guard(spec: ToolSpec, call: Callable[..., Any]) -> Callable[..., Any]:
+    """Wrap one write tool's callable so `pre_tool` runs before it does.
+
+    Imported lazily: `hooks.pre_tool` imports `ToolSpec` from this module, so a
+    module-level import here would be a cycle.
+
+    The guard re-reads the approval on EVERY call rather than capturing one,
+    because a registry is built once and shared across incidents -- capturing
+    would bind the first incident's approval to every later write.
+    """
+    from oncall_tools.hooks.approval_context import current_approval
+    from oncall_tools.hooks.pre_tool import pre_tool
+
+    def invoke(args: Mapping[str, Any] | None = None, /, **kwargs: Any) -> Any:
+        payload = dict(args or {})
+        payload.update(kwargs)
+        # Raises ApprovalRequired, ApprovalDenied or ApprovalMismatch. The tool
+        # is not called at all on any of those paths.
+        pre_tool(spec, payload, approval=current_approval())
+        return call(payload)
+
+    return invoke
+
+
+def _spec_from(
+    tool: Any, server: str, call: Callable[..., Any], *, require_approval: bool = False
+) -> ToolSpec:
+    spec = ToolSpec(
         name=tool.name,
         description=tool.description or tool.name,
         schema=tool.input_schema or {},
@@ -304,6 +330,9 @@ def _spec_from(tool: Any, server: str, call: Callable[..., Any]) -> ToolSpec:
         server=server,
         invoke=call,
     )
+    if require_approval and spec.write:
+        return replace(spec, invoke=_approval_guard(spec, call))
+    return spec
 
 
 def load_tools(
@@ -312,6 +341,8 @@ def load_tools(
     servers: Sequence[str] | None = None,
     host: str = "localhost",
     connect: Callable[[ServerSpec], Client] | None = None,
+    role: str | None = None,
+    require_approval: bool = False,
 ) -> ToolRegistry:
     """Connect to each server and return its tools as one registry.
 
@@ -354,7 +385,14 @@ def load_tools(
                     server = SERVERS[name]
                     client = await stack.enter_async_context(open_client(server))
                     for tool in (await client.list_tools()).tools:
-                        specs.append(_spec_from(tool, name, _caller(bridge, client, tool.name)))
+                        specs.append(
+                            _spec_from(
+                                tool,
+                                name,
+                                _caller(bridge, client, tool.name),
+                                require_approval=require_approval,
+                            )
+                        )
                 ready.set_result(specs)
                 await stop.wait()
         # Broad: the caller's thread is where this is re-raised, below.
@@ -381,7 +419,20 @@ def load_tools(
             task.result(timeout=10)
         bridge.close()
 
-    return ToolRegistry(tools, close=close)
+    registry = ToolRegistry(tools, close=close)
+    if role is None:
+        return registry
+
+    # `for_role` returns a LENS: `select()` passes `close=None`, so a view has
+    # nothing to close. Returning the lens itself would make the caller's
+    # `close()` a no-op and leak one MCP session per server -- `build.py` closes
+    # exactly what this function returned. So take `for_role`'s POLICY and keep
+    # ownership of the sessions here.
+    #
+    # Imported lazily because `permissions` imports this module.
+    from oncall_tools.permissions import for_role
+
+    return ToolRegistry(for_role(registry, role).tools, close=close)
 
 
 def _caller(bridge: _Bridge, client: Client, name: str) -> Callable[..., Any]:

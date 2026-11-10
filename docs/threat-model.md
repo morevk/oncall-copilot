@@ -103,6 +103,39 @@ Two changes are therefore required, and the second is in a package P1 does not o
 2. **`oncall-graph` (P2):** pass `role=` where the registry is built, and hand the approval to
    the write call in `apply_through`.
 
-**Deliberately not done yet.** Adding the `oncall-tools` half alone would produce exactly what
-F1 describes — more correct, well-tested machinery that no run calls — and that is the finding,
-not the fix. The two halves land together or the inventory above gains another inert row.
+**Status: the `oncall-tools` half is built.** `load_tools` now takes `role` and
+`require_approval`, both defaulting to off, so the graph's behaviour is unchanged until it opts
+in. The approval travels out of band through `hooks.approval_context.approved()`, a ContextVar
+rather than a tool argument: the registry hands the model a callable whose keyword arguments are
+the tool's own schema, so an `approval=` keyword would collide with any tool that ever has a
+field of that name, and the LangChain adapter passes tool arguments as `**kwargs`. Outside a
+context there is no approval, so an enforcing registry refuses every write without being told to.
+
+`test_registry_enforcement.py` exercises both defences **through `load_tools`**, the function the
+graph actually calls, so a regression there is a regression in the run path rather than in a
+helper.
+
+One bug surfaced while wiring it: `for_role` returns a lens, because `ToolRegistry.select()`
+passes `close=None`. Returning that lens from `load_tools` would have made the caller's `close()`
+a silent no-op and leaked one MCP session per server, since `build.py` closes exactly what
+`load_tools` returned. `load_tools` therefore takes `for_role`'s policy and keeps ownership of
+the sessions itself.
+
+**What remains is P2's, and it is two lines** in `oncall-graph`:
+
+```python
+# build.py:39
+return load_tools(role="remediation", require_approval=True)
+
+# nodes/remediate.py, around the invoke in apply_through
+with approved(Approval(fingerprint=..., approved_by=...)):
+    reported = invoke(clean)
+```
+
+`role="remediation"` and not `"diagnosis"`: the registry built there is shared and remediation
+needs the write tool. Per-specialist narrowing already happens by name in the topology (D4), and
+asking for a diagnosis registry here would trigger F2 — `apply_through` would fall back to the
+in-process `set_flag`, and the write would leave MCP entirely.
+
+Until those two lines land, D9 and D10 stay off and their rows above still read **NO**. What has
+changed from F1 is that the seam now exists, is tested, and is named.
