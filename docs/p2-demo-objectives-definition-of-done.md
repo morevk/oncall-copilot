@@ -36,6 +36,7 @@ replanned, then triage hit `budget exhausted` at 37 tools, and the run ended `ES
 `off` then `rollback_flag` `on`. In each run the flag was armed to `on` first and set back to `off`
 afterward. A flag already at `off` now skips `rollback_flag` and still takes the replan edge
 (`cbaf4e5`, `test_a_scripted_miss_on_another_flag_replans_without_restoring_off`). The live smoke is
+`tests/test_product_catalog_failure_alert_live_smoke.py`, renamed from
 `packages/oncall-service/tests/test_product_catalog_failure_live_smoke.py` (`3b6c796`). It arms and
 disarms the flag itself, and accepts either the second approval or budget escalation. No catalog
 run recovered, so the score does not change.

@@ -13,7 +13,7 @@ approves only the first proposal. The post-condition is what leaves the flag
 disarmed.
 
     ONCALL_LIVE_SMOKE=1 uv run pytest \
-        packages/oncall-service/tests/test_product_catalog_failure_live_smoke.py -v
+        tests/test_product_catalog_failure_alert_live_smoke.py -v
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ EXPECTED_ARGS = {"flag": FLAG, "variant": DISARMED}
 FLAG_PATH = Path(
     os.environ.get(
         "FLAGD_CONFIG",
-        Path(__file__).resolve().parents[3] / "deploy" / "flagd" / "demo.flagd.json",
+        Path(__file__).resolve().parents[1] / "deploy" / "flagd" / "demo.flagd.json",
     )
 )
 
